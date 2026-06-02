@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserProvider, Contract, formatEther, parseEther } from "ethers";
 import "./style.css";
@@ -41,6 +41,21 @@ function App() {
 
   const contractReady = useMemo(() => Boolean(VESTFLOW_ADDRESS), []);
 
+  useEffect(() => {
+    if (!window.ethereum) return;
+
+    const handleAccountsChanged = (accounts) => {
+      setAccount(accounts?.[0] || "");
+      setStatus(accounts?.[0] ? "Wallet account changed." : "Wallet disconnected.");
+    };
+
+    window.ethereum.on?.("accountsChanged", handleAccountsChanged);
+
+    return () => {
+      window.ethereum.removeListener?.("accountsChanged", handleAccountsChanged);
+    };
+  }, []);
+
   async function getProvider() {
     if (!window.ethereum) throw new Error("Wallet not found. Install MetaMask or OKX Wallet.");
     await window.ethereum.request({ method: "eth_requestAccounts" });
@@ -63,7 +78,33 @@ function App() {
       setAccount(await signer.getAddress());
       setStatus("Wallet connected to OPN Testnet.");
     } catch (error) {
-      setStatus(error.message);
+      setStatus(error.shortMessage || error.message);
+    }
+  }
+
+  async function changeWallet() {
+    try {
+      if (!window.ethereum) {
+        throw new Error("Wallet not found. Install MetaMask or OKX Wallet.");
+      }
+
+      try {
+        await window.ethereum.request({
+          method: "wallet_requestPermissions",
+          params: [{ eth_accounts: {} }]
+        });
+      } catch (permissionError) {
+        console.log("Wallet permission request skipped:", permissionError);
+      }
+
+      const provider = await getProvider();
+      const signer = await provider.getSigner();
+      const selectedAddress = await signer.getAddress();
+
+      setAccount(selectedAddress);
+      setStatus(`Wallet changed: ${selectedAddress}`);
+    } catch (error) {
+      setStatus(error.shortMessage || error.message);
     }
   }
 
@@ -140,6 +181,7 @@ function App() {
         </p>
         <div className="actions">
           <button onClick={connectWallet}>{account ? "Wallet Connected" : "Connect Wallet"}</button>
+          {account && <button onClick={changeWallet}>Change Wallet</button>}
           <a href="https://testnet.iopn.tech" target="_blank" rel="noreferrer">Open Explorer</a>
         </div>
         {account && <p className="wallet">{account}</p>}

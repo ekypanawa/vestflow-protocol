@@ -1,0 +1,26 @@
+{
+  "name": "vestflow-protocol",
+  "version": "1.0.0",
+  "description": "A trustless vesting and fund distribution protocol built on OPN Chain.",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "compile": "hardhat compile",
+    "deploy:opn": "hardhat run scripts/deploy.js --network opnTestnet"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "ethers": "^6.13.5"
+  },
+  "devDependencies": {
+    "hardhat": "^2.22.19",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "dotenv": "^16.4.7"
+  }
+}

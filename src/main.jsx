@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { DotLottieReact } from "@lottiefiles/dotlottie-react";
-import { BrowserProvider, Contract, JsonRpcProvider, formatEther, isAddress, parseEther } from "ethers";
+import { ethers, Contract, JsonRpcProvider, formatEther, isAddress, parseEther } from "ethers";
 import {
   ChevronDown,
   Copy,
@@ -89,6 +89,29 @@ function getWalletProvider(wallet) {
   return wallet?.provider || wallet;
 }
 
+function isOkxProvider(provider) {
+  return Boolean(provider?.isOkxWallet || provider?.isOKExWallet);
+}
+
+function isMetaMaskWallet(wallet) {
+  const rdns = normalizeWalletName(wallet?.info?.rdns || wallet?.rdns || wallet?.providerInfo?.rdns);
+  const name = normalizeWalletName(getWalletDisplayName(wallet));
+  return rdns === "io.metamask" || name.includes("metamask");
+}
+
+function findMetaMaskProvider(wallets = []) {
+  if (typeof window === "undefined") return null;
+  const eip6963Wallet = wallets.find((wallet) => isMetaMaskWallet(wallet) && wallet?.provider?.request);
+  if (eip6963Wallet?.provider?.request) return eip6963Wallet.provider;
+
+  const injectedProviders = Array.isArray(window.ethereum?.providers) ? window.ethereum.providers : [];
+  const injectedMetaMask = injectedProviders.find((provider) => provider?.isMetaMask && !isOkxProvider(provider));
+  if (injectedMetaMask?.request) return injectedMetaMask;
+
+  if (window.ethereum?.isMetaMask && !isOkxProvider(window.ethereum)) return window.ethereum;
+  return null;
+}
+
 function getWalletDedupeKey(wallet) {
   const rdns = wallet?.info?.rdns || wallet?.rdns || wallet?.providerInfo?.rdns;
   const providedName = wallet?.info?.name || wallet?.name || wallet?.providerInfo?.name;
@@ -134,8 +157,9 @@ function getFallbackWallets(detectedWallets) {
   const detectedNames = detectedWallets.map((wallet) => normalizeWalletName(getWalletDisplayName(wallet)));
   const fallbacks = [];
 
-  if (!detectedNames.some((name) => name.includes("metamask")) && window.ethereum?.request) {
-    fallbacks.push({ provider: window.ethereum, name: "MetaMask", fallback: true });
+  const metaMaskProvider = findMetaMaskProvider(detectedWallets);
+  if (!detectedNames.some((name) => name.includes("metamask")) && metaMaskProvider?.request) {
+    fallbacks.push({ provider: metaMaskProvider, name: "MetaMask", fallback: true });
   }
   if (!detectedNames.some((name) => name.includes("okx")) && (window.okxwallet?.request || window.ethereum?.request)) {
     fallbacks.push({ provider: window.okxwallet || window.ethereum, name: "OKX Wallet", fallback: true });
@@ -327,10 +351,15 @@ function App() {
   }
 
   function reportError(error) {
-    const message = error?.shortMessage || error?.message || "Transaction failed.";
+    const code = error?.code || error?.info?.error?.code;
+    let message = error?.shortMessage || error?.message || "Transaction failed.";
+    if (code === -32002) message = "MetaMask request already pending. Open MetaMask and approve or reject it.";
+    if (code === 4001 || error?.code === "ACTION_REJECTED") message = "Wallet connection cancelled.";
     const knownErrors = [
       "Connect wallet first.",
       "Wallet not found. Install MetaMask or OKX Wallet.",
+      "MetaMask request already pending. Open MetaMask and approve or reject it.",
+      "Wallet connection cancelled.",
       "Recipient address is required.",
       "Invalid recipient address.",
       "Amount must be greater than 0.",
@@ -350,11 +379,11 @@ function App() {
     const message = error?.shortMessage || error?.message || fallback;
     const lowerMessage = String(message || fallback).toLowerCase();
 
-    if (code === 4001 || lowerMessage.includes("user rejected") || lowerMessage.includes("user denied")) {
-      return "Claim cancelled.";
-    }
     if (code === -32002 || lowerMessage.includes("already pending") || lowerMessage.includes("request of type")) {
-      return "Check your wallet for a pending request.";
+      return "MetaMask request already pending. Open MetaMask and approve or reject it.";
+    }
+    if (code === 4001 || code === "ACTION_REJECTED" || lowerMessage.includes("user rejected") || lowerMessage.includes("user denied")) {
+      return "Wallet connection cancelled.";
     }
     if (lowerMessage.includes("recipient") || lowerMessage.includes("not recipient")) {
       return "Only the recipient wallet can claim this vault.";
@@ -375,16 +404,20 @@ function App() {
         throw switchError;
       }
     }
-    return new BrowserProvider(walletProvider);
+    return new ethers.BrowserProvider(walletProvider);
   }
 
   async function connectWallet(wallet) {
     try {
-      const walletProvider = getWalletProvider(wallet);
       const walletName = getWalletDisplayName(wallet);
+      const walletProvider = isMetaMaskWallet(wallet) ? findMetaMaskProvider([wallet, ...detectedWallets]) : getWalletProvider(wallet);
       if (!walletProvider?.request) throw new Error("Wallet not found. Install MetaMask or OKX Wallet.");
       setSelectedWalletProvider(walletProvider);
       setSelectedWalletName(walletName);
+      if (import.meta.env.DEV) {
+        console.log("Selected wallet:", walletName);
+        console.log("Selected provider:", walletProvider);
+      }
       const provider = await getProvider(walletProvider);
       const signer = await provider.getSigner();
       const selectedAccount = await signer.getAddress();

@@ -62,6 +62,112 @@ function shortAddress(value) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
+function getWalletDisplayName(wallet) {
+  const name = wallet?.info?.name || wallet?.name || wallet?.providerInfo?.name;
+  if (name) return name;
+
+  const provider = wallet?.provider || wallet;
+  if (provider?.isOkxWallet || provider?.isOKExWallet) return "OKX Wallet";
+  if (provider?.isRabby) return "Rabby Wallet";
+  if (provider?.isCoinbaseWallet) return "Coinbase Wallet";
+  if (provider?.isBraveWallet) return "Brave Wallet";
+  if (provider?.isRonin) return "Ronin Wallet";
+  if (provider?.isMetaMask) return "MetaMask";
+
+  return "Browser Wallet";
+}
+
+function getWalletIcon(wallet) {
+  return wallet?.info?.icon || wallet?.icon || wallet?.providerInfo?.icon || "";
+}
+
+function normalizeWalletName(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getWalletProvider(wallet) {
+  return wallet?.provider || wallet;
+}
+
+function getWalletDedupeKey(wallet) {
+  const rdns = wallet?.info?.rdns || wallet?.rdns || wallet?.providerInfo?.rdns;
+  const providedName = wallet?.info?.name || wallet?.name || wallet?.providerInfo?.name;
+  const name = normalizeWalletName(providedName || getWalletDisplayName(wallet));
+  const icon = getWalletIcon(wallet);
+  const key = rdns || name || `${getWalletDisplayName(wallet)}-${icon}`;
+  return normalizeWalletName(key);
+}
+
+function hasWalletMetadata(wallet) {
+  return Boolean(wallet?.info?.rdns || wallet?.info?.name || wallet?.info?.icon || wallet?.providerInfo?.name || wallet?.providerInfo?.icon || wallet?.name || wallet?.icon);
+}
+
+function hasRichWalletMetadata(wallet) {
+  return Boolean(wallet?.info?.rdns || wallet?.info?.name || wallet?.info?.icon || wallet?.providerInfo?.name || wallet?.providerInfo?.icon || wallet?.icon);
+}
+
+function dedupeWallets(wallets) {
+  const seen = new Set();
+  const uniqueWallets = wallets.filter((wallet) => {
+    const provider = getWalletProvider(wallet);
+    if (!provider?.request) return false;
+    const key = getWalletDedupeKey(wallet);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  const richNames = new Set(
+    uniqueWallets
+      .filter(hasRichWalletMetadata)
+      .map((wallet) => normalizeWalletName(getWalletDisplayName(wallet)))
+      .filter(Boolean)
+  );
+
+  return uniqueWallets.filter((wallet) => {
+    const name = normalizeWalletName(getWalletDisplayName(wallet));
+    return hasRichWalletMetadata(wallet) || !richNames.has(name);
+  });
+}
+
+function getFallbackWallets(detectedWallets) {
+  const detectedNames = detectedWallets.map((wallet) => normalizeWalletName(getWalletDisplayName(wallet)));
+  const fallbacks = [];
+
+  if (!detectedNames.some((name) => name.includes("metamask")) && window.ethereum?.request) {
+    fallbacks.push({ provider: window.ethereum, name: "MetaMask", fallback: true });
+  }
+  if (!detectedNames.some((name) => name.includes("okx")) && (window.okxwallet?.request || window.ethereum?.request)) {
+    fallbacks.push({ provider: window.okxwallet || window.ethereum, name: "OKX Wallet", fallback: true });
+  }
+  if (!detectedWallets.length && window.ethereum?.request) {
+    fallbacks.push({ provider: window.ethereum, name: "Browser Wallet", fallback: true });
+  }
+
+  return fallbacks;
+}
+
+function prepareWalletList(wallets) {
+  const detectedWallets = dedupeWallets(wallets);
+  return dedupeWallets([...detectedWallets, ...getFallbackWallets(detectedWallets)]);
+}
+
+function getInjectedWallets() {
+  if (typeof window === "undefined") return [];
+  const injectedProviders = Array.isArray(window.ethereum?.providers)
+    ? window.ethereum.providers
+    : window.ethereum
+      ? [window.ethereum]
+      : [];
+  const wallets = injectedProviders.map((provider) => ({ provider }));
+
+  if (window.okxwallet) {
+    wallets.push({ provider: window.okxwallet, name: "OKX Wallet" });
+  }
+
+  return prepareWalletList(wallets);
+}
+
 function getDefaultReleaseDate() {
   const date = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   date.setSeconds(0, 0);
@@ -101,6 +207,10 @@ function App() {
   const [theme, setTheme] = useState(getInitialTheme);
   const [activePage, setActivePage] = useState("home");
   const [walletDropdownOpen, setWalletDropdownOpen] = useState(false);
+  const [walletSelectorOpen, setWalletSelectorOpen] = useState(false);
+  const [detectedWallets, setDetectedWallets] = useState(getInjectedWallets);
+  const [selectedWalletProvider, setSelectedWalletProvider] = useState(null);
+  const [selectedWalletName, setSelectedWalletName] = useState("");
   const [toasts, setToasts] = useState([]);
   const [activity, setActivity] = useState(getInitialActivity);
   const [mascotOffset, setMascotOffset] = useState({ x: 0, y: 0 });
@@ -158,7 +268,28 @@ function App() {
   }, [vaultId]);
 
   useEffect(() => {
-    if (!window.ethereum) return;
+    if (typeof window === "undefined") return;
+
+    const addWallets = (wallets) => {
+      setDetectedWallets((currentWallets) => prepareWalletList([...currentWallets, ...wallets]));
+    };
+
+    const handleProviderAnnouncement = (event) => {
+      if (event?.detail) addWallets([event.detail]);
+    };
+
+    addWallets(getInjectedWallets());
+    window.addEventListener("eip6963:announceProvider", handleProviderAnnouncement);
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+
+    return () => {
+      window.removeEventListener("eip6963:announceProvider", handleProviderAnnouncement);
+    };
+  }, []);
+
+  useEffect(() => {
+    const walletProvider = selectedWalletProvider || window.ethereum;
+    if (!walletProvider?.on) return;
 
     const handleAccountsChanged = (accounts) => {
       setAccount(accounts?.[0] || "");
@@ -171,12 +302,12 @@ function App() {
       }
     };
 
-    window.ethereum.on?.("accountsChanged", handleAccountsChanged);
+    walletProvider.on("accountsChanged", handleAccountsChanged);
 
     return () => {
-      window.ethereum.removeListener?.("accountsChanged", handleAccountsChanged);
+      walletProvider.removeListener?.("accountsChanged", handleAccountsChanged);
     };
-  }, []);
+  }, [selectedWalletProvider]);
 
   function notify(title, description = "", type = "info") {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -196,9 +327,10 @@ function App() {
   }
 
   function reportError(error) {
-    const message = error.shortMessage || error.message || "Transaction failed.";
+    const message = error?.shortMessage || error?.message || "Transaction failed.";
     const knownErrors = [
       "Connect wallet first.",
+      "Wallet not found. Install MetaMask or OKX Wallet.",
       "Recipient address is required.",
       "Invalid recipient address.",
       "Amount must be greater than 0.",
@@ -216,7 +348,7 @@ function App() {
   function normalizeWalletError(error, fallback = "Transaction failed") {
     const code = error?.code || error?.info?.error?.code;
     const message = error?.shortMessage || error?.message || fallback;
-    const lowerMessage = message.toLowerCase();
+    const lowerMessage = String(message || fallback).toLowerCase();
 
     if (code === 4001 || lowerMessage.includes("user rejected") || lowerMessage.includes("user denied")) {
       return "Claim cancelled.";
@@ -230,29 +362,36 @@ function App() {
     return message;
   }
 
-  async function getProvider() {
-    if (!window.ethereum) throw new Error("Wallet not found. Install MetaMask or OKX Wallet.");
-    await window.ethereum.request({ method: "eth_requestAccounts" });
+  async function getProvider(providerOverride = null) {
+    const walletProvider = providerOverride || selectedWalletProvider || window.ethereum;
+    if (!walletProvider?.request) throw new Error("Wallet not found. Install MetaMask or OKX Wallet.");
+    await walletProvider.request({ method: "eth_requestAccounts" });
     try {
-      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: OPN_CHAIN_ID_HEX }] });
+      await walletProvider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: OPN_CHAIN_ID_HEX }] });
     } catch (switchError) {
-      if (switchError.code === 4902) {
-        await window.ethereum.request({ method: "wallet_addEthereumChain", params: [OPN_TESTNET] });
+      if (switchError?.code === 4902) {
+        await walletProvider.request({ method: "wallet_addEthereumChain", params: [OPN_TESTNET] });
       } else {
         throw switchError;
       }
     }
-    return new BrowserProvider(window.ethereum);
+    return new BrowserProvider(walletProvider);
   }
 
-  async function connectWallet() {
+  async function connectWallet(wallet) {
     try {
-      const provider = await getProvider();
+      const walletProvider = getWalletProvider(wallet);
+      const walletName = getWalletDisplayName(wallet);
+      if (!walletProvider?.request) throw new Error("Wallet not found. Install MetaMask or OKX Wallet.");
+      setSelectedWalletProvider(walletProvider);
+      setSelectedWalletName(walletName);
+      const provider = await getProvider(walletProvider);
       const signer = await provider.getSigner();
       const selectedAccount = await signer.getAddress();
       setAccount(selectedAccount);
       setWalletDropdownOpen(false);
-      notify("Wallet connected", "Connected to OPN Testnet.", "success");
+      setWalletSelectorOpen(false);
+      notify("Wallet connected", `Connected ${walletName} to OPN Testnet.`, "success");
       addActivity("Wallet Connected", `Connected ${shortAddress(selectedAccount)}.`);
     } catch (error) {
       reportError(error);
@@ -293,10 +432,19 @@ function App() {
     window.open("https://builders.iopn.tech/dashboard/profile", "_blank", "noopener,noreferrer");
   }
 
+  function openWalletSelector() {
+    setDetectedWallets((currentWallets) => prepareWalletList([...currentWallets, ...getInjectedWallets()]));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("eip6963:requestProvider"));
+    }
+    setWalletSelectorOpen(true);
+  }
+
   async function signOutWallet() {
     try {
-      if (window.ethereum) {
-        await window.ethereum.request({
+      const walletProvider = selectedWalletProvider || window.ethereum;
+      if (walletProvider?.request) {
+        await walletProvider.request({
           method: "wallet_revokePermissions",
           params: [{ eth_accounts: {} }]
         });
@@ -305,9 +453,11 @@ function App() {
       // Some wallets do not support permission revocation; local state still signs out.
     } finally {
       setAccount("");
+      setSelectedWalletProvider(null);
+      setSelectedWalletName("");
       setForm((currentForm) => ({
         ...currentForm,
-        recipient: currentForm.recipient.toLowerCase() === account.toLowerCase() ? "" : currentForm.recipient
+        recipient: currentForm.recipient && account && currentForm.recipient.toLowerCase() === account.toLowerCase() ? "" : currentForm.recipient
       }));
       setWalletDropdownOpen(false);
       notify("Wallet disconnected", "Local wallet session cleared.", "success");
@@ -565,7 +715,7 @@ function App() {
         <div className="wallet-menu">
           <button
             className={account ? "wallet-button connected" : "wallet-button"}
-            onClick={account ? () => setWalletDropdownOpen((isOpen) => !isOpen) : connectWallet}
+            onClick={account ? () => setWalletDropdownOpen((isOpen) => !isOpen) : openWalletSelector}
             aria-expanded={account ? walletDropdownOpen : undefined}
             aria-haspopup={account ? "menu" : undefined}
           >
@@ -584,7 +734,7 @@ function App() {
               <span className="dropdown-label">LINKED WALLET</span>
               <div className="dropdown-address">
                 <Wallet aria-hidden="true" size={18} />
-                <code>{account}</code>
+                <code>{selectedWalletName ? `${selectedWalletName}: ${account}` : account}</code>
               </div>
               <button onClick={copyAddress} role="menuitem"><Copy aria-hidden="true" size={17} />Copy address</button>
               <button onClick={openWalletExplorer} role="menuitem"><ExternalLink aria-hidden="true" size={17} />View on explorer</button>
@@ -594,6 +744,35 @@ function App() {
           )}
         </div>
       </header>
+
+      {walletSelectorOpen && !account && (
+        <div className="wallet-modal-backdrop" role="presentation" onClick={() => setWalletSelectorOpen(false)}>
+          <div className="wallet-modal" role="dialog" aria-modal="true" aria-labelledby="wallet-selector-title" onClick={(event) => event.stopPropagation()}>
+            <div className="wallet-modal-heading">
+              <span className="dropdown-label">CONNECT WALLET</span>
+              <h2 id="wallet-selector-title">Select wallet</h2>
+            </div>
+            <div className="wallet-choice-list">
+              {detectedWallets.length ? detectedWallets.map((wallet) => (
+                <button key={getWalletDedupeKey(wallet)} onClick={() => connectWallet(wallet)}>
+                  {getWalletIcon(wallet) ? (
+                    <img src={getWalletIcon(wallet)} alt="" />
+                  ) : (
+                    <Wallet aria-hidden="true" size={18} />
+                  )}
+                  <span>
+                    <strong>{getWalletDisplayName(wallet)}</strong>
+                    <small>{wallet?.info?.rdns || wallet?.rdns || "Detected wallet provider"}</small>
+                  </span>
+                </button>
+              )) : (
+                <div className="wallet-empty-state">Wallet not found. Install MetaMask or OKX Wallet.</div>
+              )}
+            </div>
+            <button className="wallet-modal-cancel" onClick={() => setWalletSelectorOpen(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       <div className="toast-stack" aria-live="polite" aria-atomic="true">
         {toasts.map((toast) => (

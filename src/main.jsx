@@ -1,11 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { DotLottieReact } from "@lottiefiles/dotlottie-react";
 import { ethers, Contract, JsonRpcProvider, formatEther, isAddress, parseEther } from "ethers";
 import {
+  Activity,
   ChevronDown,
+  Coins,
   Copy,
   ExternalLink,
+  FileCheck,
+  Globe,
   Home,
   Info,
   LockKeyhole,
@@ -34,6 +38,8 @@ const DEPLOY_TX = "0x7638dc202f14c797b3441aa50375fab6e07ba5ea2cffb2da08c3e2111c7
 const DEPLOYER = "0xd564ab77aDE8D2a4f3199d71f4Aa9F487976d63C";
 const EXPLORER_URL = "https://testnet.iopn.tech/address/0x5E0d0146804E6c34f748CED382C5ee179aFb3A5E";
 const GITHUB_URL = "https://github.com/ekypanawa/vestflow-protocol";
+const DAPP_URL = "https://vestflow-protocol.vercel.app";
+const METAMASK_DAPP_URL = "https://metamask.app.link/dapp/vestflow-protocol.vercel.app";
 
 const ABI = [
   "function createVault(address recipient,uint64 cliffSeconds,uint64 durationSeconds,string title) payable returns (uint256)",
@@ -212,6 +218,17 @@ function getInitialActivity() {
   }
 }
 
+function isMobileUserAgent() {
+  if (typeof navigator === "undefined") return false;
+  return /android|iphone|ipad|ipod|mobile|iemobile|opera mini/i.test(navigator.userAgent || "");
+}
+
+function getWalletNotFoundMessage() {
+  return isMobileUserAgent()
+    ? "Open this dApp inside MetaMask or OKX Wallet browser to connect on mobile."
+    : "No wallet found. Install MetaMask or OKX Wallet.";
+}
+
 function getVaultStatus(vault) {
   if (!vault) return "Not loaded";
   const amount = BigInt(vault.amountRaw || 0);
@@ -253,9 +270,15 @@ function App() {
   const [nextVaultId, setNextVaultId] = useState("...");
   const [lastRefreshed, setLastRefreshed] = useState("");
   const [proofReceipt, setProofReceipt] = useState(null);
+  const walletMenuRef = useRef(null);
 
   const contractReady = useMemo(() => Boolean(VESTFLOW_ADDRESS), []);
   const contractStatus = account ? "Connected" : "Not Connected";
+  const isMobileBrowser = useMemo(() => isMobileUserAgent(), []);
+  const hasAvailableWalletProvider = useMemo(
+    () => Boolean(selectedWalletProvider?.request || window.ethereum?.request || detectedWallets.some((wallet) => getWalletProvider(wallet)?.request)),
+    [detectedWallets, selectedWalletProvider]
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -273,6 +296,30 @@ function App() {
     }, 4200);
     return () => window.clearTimeout(timeout);
   }, [toasts]);
+
+  useEffect(() => {
+    if (!walletDropdownOpen) return;
+
+    const handleClickOutside = (event) => {
+      if (walletMenuRef.current && !walletMenuRef.current.contains(event.target)) {
+        setWalletDropdownOpen(false);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") setWalletDropdownOpen(false);
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("touchstart", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [walletDropdownOpen]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)");
@@ -369,7 +416,9 @@ function App() {
       "Nothing available to claim yet.",
       "Only the recipient wallet can claim this vault.",
       "Claim cancelled.",
-      "Check your wallet for a pending request."
+      "Check your wallet for a pending request.",
+      "Open this dApp inside MetaMask or OKX Wallet browser to connect on mobile.",
+      "No wallet found. Install MetaMask or OKX Wallet."
     ];
     notify(knownErrors.includes(message) ? message : "Transaction failed", knownErrors.includes(message) ? "" : message, "error");
   }
@@ -393,7 +442,7 @@ function App() {
 
   async function getProvider(providerOverride = null) {
     const walletProvider = providerOverride || selectedWalletProvider || window.ethereum;
-    if (!walletProvider?.request) throw new Error("Wallet not found. Install MetaMask or OKX Wallet.");
+    if (!walletProvider?.request) throw new Error(getWalletNotFoundMessage());
     await walletProvider.request({ method: "eth_requestAccounts" });
     try {
       await walletProvider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: OPN_CHAIN_ID_HEX }] });
@@ -411,7 +460,7 @@ function App() {
     try {
       const walletName = getWalletDisplayName(wallet);
       const walletProvider = isMetaMaskWallet(wallet) ? findMetaMaskProvider([wallet, ...detectedWallets]) : getWalletProvider(wallet);
-      if (!walletProvider?.request) throw new Error("Wallet not found. Install MetaMask or OKX Wallet.");
+      if (!walletProvider?.request) throw new Error(getWalletNotFoundMessage());
       setSelectedWalletProvider(walletProvider);
       setSelectedWalletName(walletName);
       if (import.meta.env.DEV) {
@@ -466,7 +515,11 @@ function App() {
   }
 
   function openWalletSelector() {
-    setDetectedWallets((currentWallets) => prepareWalletList([...currentWallets, ...getInjectedWallets()]));
+    const refreshedWallets = getInjectedWallets();
+    if (isMobileUserAgent() && !refreshedWallets.some((wallet) => getWalletProvider(wallet)?.request) && !window.ethereum?.request) {
+      notify("Mobile wallet required", getWalletNotFoundMessage(), "error");
+    }
+    setDetectedWallets((currentWallets) => prepareWalletList([...currentWallets, ...refreshedWallets]));
     if (typeof window !== "undefined") {
       window.dispatchEvent(new Event("eip6963:requestProvider"));
     }
@@ -745,7 +798,7 @@ function App() {
         <button className="theme-toggle" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle color theme">
           {theme === "dark" ? <Sun aria-hidden="true" size={19} /> : <Moon aria-hidden="true" size={19} />}
         </button>
-        <div className="wallet-menu">
+        <div className="wallet-menu" ref={walletMenuRef}>
           <button
             className={account ? "wallet-button connected" : "wallet-button"}
             onClick={account ? () => setWalletDropdownOpen((isOpen) => !isOpen) : openWalletSelector}
@@ -799,7 +852,18 @@ function App() {
                   </span>
                 </button>
               )) : (
-                <div className="wallet-empty-state">Wallet not found. Install MetaMask or OKX Wallet.</div>
+                <div className="wallet-empty-state">{getWalletNotFoundMessage()}</div>
+              )}
+              {isMobileBrowser && !hasAvailableWalletProvider && (
+                <div className="mobile-wallet-help">
+                  <strong>Mobile wallet required</strong>
+                  <p>Open VestFlow inside MetaMask or OKX Wallet in-app browser to connect on mobile.</p>
+                  <div className="mobile-wallet-actions">
+                    <button onClick={() => copyText(DAPP_URL, "dApp URL copied.")}>Copy dApp URL</button>
+                    <a href={METAMASK_DAPP_URL} target="_blank" rel="noreferrer">Open MetaMask</a>
+                  </div>
+                  <p className="okx-mobile-note">OKX Wallet: open OKX Wallet app, go to Discover / Browser, then paste {DAPP_URL}.</p>
+                </div>
               )}
             </div>
             <button className="wallet-modal-cancel" onClick={() => setWalletSelectorOpen(false)}>Cancel</button>
@@ -871,10 +935,34 @@ function App() {
         )}
 
         <section className="quick-stats">
-          <div><span>Network</span><strong>OPN Testnet</strong></div>
-          <div><span>Asset</span><strong>Native OPN</strong></div>
-          <div><span>Contract</span><strong>Live</strong></div>
-          <div><span>Status</span><strong>MVP</strong></div>
+          <div className="stat-card">
+            <span className="stat-icon"><Globe aria-hidden="true" /></span>
+            <div className="stat-copy">
+              <span className="stat-label">Network</span>
+              <strong className="stat-value">OPN Testnet</strong>
+            </div>
+          </div>
+          <div className="stat-card">
+            <span className="stat-icon"><Coins aria-hidden="true" /></span>
+            <div className="stat-copy">
+              <span className="stat-label">Asset</span>
+              <strong className="stat-value">Native OPN</strong>
+            </div>
+          </div>
+          <div className="stat-card">
+            <span className="stat-icon"><FileCheck aria-hidden="true" /></span>
+            <div className="stat-copy">
+              <span className="stat-label">Contract</span>
+              <strong className="stat-value">Live</strong>
+            </div>
+          </div>
+          <div className="stat-card">
+            <span className="stat-icon"><Activity aria-hidden="true" /></span>
+            <div className="stat-copy">
+              <span className="stat-label">Status</span>
+              <strong className="stat-value">MVP</strong>
+            </div>
+          </div>
         </section>
           </>
         )}

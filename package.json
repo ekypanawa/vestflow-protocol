@@ -12,15 +12,17 @@
     "deploy:opn": "hardhat run scripts/deploy.js --network opnTestnet"
   },
   "dependencies": {
+    "@lottiefiles/dotlottie-react": "^0.19.4",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
+    "ethers": "^6.13.5",
+    "lucide-react": "^1.17.0",
     "react": "latest",
     "react-dom": "latest",
-    "ethers": "^6.13.5"
+    "vite": "latest"
   },
   "devDependencies": {
-    "hardhat": "^2.22.19",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "hardhat": "^2.22.19"
   }
 }

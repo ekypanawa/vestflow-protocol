@@ -1,52 +1,63 @@
 # VestFlow Protocol
 
-VestFlow Protocol is a trustless vesting and fund distribution protocol built for the OPN Builders Season 1: DeFi & Open Finance track.
+VestFlow Protocol is a trustless native OPN vesting and fund-locking dashboard for OPN Builders. It lets builders create transparent vaults, track vesting progress, verify proofs on OPN Testnet, and claim vested funds directly from the deployed smart contract.
 
-## What it does
+## Project Overview
 
-VestFlow lets teams, communities, and contributors create transparent on-chain vesting vaults. A creator can deposit native OPN, set a recipient, define a cliff period, define a vesting duration, and let the recipient claim unlocked funds directly from the smart contract.
+VestFlow turns contributor payouts, grants, milestone rewards, and team unlocks into verifiable on-chain vaults. The frontend connects to OPN Testnet, creates native OPN locks, reads live contract state, and generates a proof receipt after vault creation.
 
-## Why it matters
+## Problem
 
-Web3 teams often distribute grants, campaign rewards, contributor payments, or token launch allocations through manual processes. VestFlow moves this workflow on-chain so deposits, schedules, claims, and proofs can be verified publicly.
+Builder teams often coordinate fund releases with spreadsheets, manual reminders, and private screenshots. That makes it hard for recipients, reviewers, and communities to verify whether funds were locked, when they unlock, and whether claims happened according to the rules.
 
-## Core features
+## Solution
 
-- Native OPN vesting vaults
-- Cliff and duration-based release schedules
-- Recipient claim function
-- Creator cancellation with vested/unvested settlement
-- Frontend wallet connection
-- OPN Testnet network switching
-- On-chain proof through transaction hashes and explorer links
+VestFlow uses an OPN Testnet smart contract to hold native OPN and enforce release rules. Creators set a recipient, amount, lock style, release date, and note. Recipients can check claimable and vested balances, then claim directly from the contract.
 
-## Tech stack
+## OPN Chain Integration
 
-- Solidity
-- Hardhat
-- React
-- Vite
-- Ethers.js
-- OPN Chain Testnet
+- Network: OPN Testnet
+- Chain ID: `984`
+- RPC: `https://testnet-rpc.iopn.tech`
+- Explorer: `https://testnet.iopn.tech`
+- Contract: `0x5E0d0146804E6c34f748CED382C5ee179aFb3A5E`
+- Deploy TX: `0x7638dc202f14c797b3441aa50375fab6e07ba5ea2cffb2da08c3e2111c796f59`
+- Deployer: `0xd564ab77aDE8D2a4f3199d71f4Aa9F487976d63C`
 
-## OPN Testnet
+Frontend integration includes wallet connection, OPN Testnet switch/add network, live `nextVaultId()` reads, selected vault `claimableAmount()` and `vestedAmount()` reads, proof receipts, and explorer links.
 
-- Network Name: OPN Testnet
-- Chain ID: 984
-- RPC URL: https://testnet-rpc.iopn.tech
-- Currency Symbol: OPN
-- Explorer: https://testnet.iopn.tech
-- Faucet: https://faucet.iopn.tech
+## Live Demo URL
 
-## Local setup
+- Live demo URL: add the hosted deployment URL after deployment.
+- Repository: `https://github.com/ekypanawa/vestflow-protocol`
+- Contract explorer: `https://testnet.iopn.tech/address/0x5E0d0146804E6c34f748CED382C5ee179aFb3A5E`
+
+## Core Features
+
+- Native OPN lock creation
+- Simple timelock and linear vesting UI mapped to the current contract
+- Track and claim by vault ID
+- Live contract reader
+- Proof receipt after vault creation
+- Copyable contract, deploy transaction, deployer, repository, and proof summary
+- Dark/light dashboard mode
+- Connected wallet dropdown with copy, explorer, profile, and sign out
+- Lottie wallet-lock and connected mascot animations
+
+## How to Run Locally
 
 ```bash
 npm install
-cp .env.example .env
 npm run dev
 ```
 
-## Compile contract
+Open the local Vite URL, usually:
+
+```text
+http://127.0.0.1:5173/
+```
+
+## Compile Contract
 
 ```bash
 npm run compile
@@ -54,53 +65,68 @@ npm run compile
 
 ## Deploy to OPN Testnet
 
-1. Add your wallet private key to `.env`.
-2. Make sure the wallet has testnet OPN from the faucet.
+1. Copy `.env.example` to `.env`.
+2. Add a funded testnet deployer key to `.env`.
 3. Run:
 
 ```bash
 npm run deploy:opn
 ```
 
-After deployment, copy the contract address into `.env`:
+4. Set the deployed contract address for the frontend:
 
 ```bash
 VITE_VESTFLOW_ADDRESS=your_deployed_contract_address
 ```
 
-Then restart the frontend:
+5. Restart the frontend:
 
 ```bash
 npm run dev
 ```
 
-## Builder submission fields
+Never commit `.env` or private keys.
 
-**Project name:** VestFlow Protocol
+## How to Test the Demo
 
-**One-line tagline:** A trustless vesting and fund distribution protocol for teams, contributors, and communities on OPN Chain.
+1. Connect wallet.
+2. Switch or add OPN Testnet.
+3. Enter recipient and amount.
+4. Choose Simple Timelock or Linear Vesting.
+5. Create Secure Lock.
+6. Save the proof receipt and transaction link.
+7. Track Vault ID.
+8. Check claimable and vested amounts.
+9. Claim when funds are available.
+10. Verify on OPN Explorer.
 
-**Demo URL:** Add the Vercel deployment URL after deployment.
+## Deployment Checklist
 
-**Repository URL:** https://github.com/ekypanawa/vestflow-protocol
+- Confirm `.env` is local only and not committed.
+- Confirm the frontend uses the intended contract address.
+- Run `npm run build`.
+- Test wallet connection, lock creation, proof receipt, track, claimable read, and explorer links on OPN Testnet.
+- Deploy the static frontend only after the build and manual test flow pass.
+
+## Security Notes
+
+- Testnet demo only. Do not send mainnet funds.
+- The current contract supports native OPN only.
+- ERC-20 support is marked as coming soon and requires a new contract deployment.
+- Private keys must remain in local `.env` files and must not be exposed in frontend code.
+- A production release should include external review, broader test coverage, and audit preparation.
 
 ## Roadmap
 
-### Phase 1
-- Deploy VestFlow smart contract on OPN Testnet
-- Build frontend dashboard
-- Add wallet connection, create vault, track vault, and claim functions
-- Publish GitHub source code
-- Submit contract address and deployment transaction hash
+- Q1 2026: OPN Testnet deployment, native OPN locks, live reads, proof receipts.
+- Q2 2026: Vault indexing, history views, analytics, and richer receipt exports.
+- Q3 2026: DAO grant templates, multi-recipient flows, and team dashboard workflows.
+- Q4 2026: Security hardening, ERC-20 research, audit preparation, and mainnet readiness.
 
-### Phase 2
-- Add ERC-20 token support
-- Add multi-recipient vaults
-- Add vault history and analytics
-- Improve UI/UX for non-technical users
+## Changelog
 
-### Phase 3
-- Add reusable vesting templates
-- Add team treasury dashboard
-- Add exportable proof reports
-- Prepare for production-ready security review
+- Added live contract reader for `nextVaultId`, claimable, vested, network, and contract status.
+- Added proof receipt after vault creation with explorer link and copy summary.
+- Added copy buttons for key public proof fields.
+- Added guided demo steps for OPN Builders reviewers.
+- Improved wallet dropdown, dark/light UI, and Lottie dashboard animations.

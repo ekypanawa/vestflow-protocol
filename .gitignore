@@ -5,3 +5,6 @@ cache
 artifacts
 .vite
 .DS_Store
+
+.vercel
+.env*.local

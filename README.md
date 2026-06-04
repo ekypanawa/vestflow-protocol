@@ -118,10 +118,45 @@ Never commit `.env` or private keys.
 
 ## Roadmap
 
-- Q1 2026: OPN Testnet deployment, native OPN locks, live reads, proof receipts.
-- Q2 2026: Vault indexing, history views, analytics, and richer receipt exports.
-- Q3 2026: DAO grant templates, multi-recipient flows, and team dashboard workflows.
-- Q4 2026: Security hardening, ERC-20 research, audit preparation, and mainnet readiness.
+### Q1 2026: MVP and OPN Testnet deployment
+
+- Deploy VestFlow smart contract on OPN Testnet
+- Support native OPN lock and vesting vaults
+- Add vault creation, claim flow, and proof receipt
+- Add multi-wallet connection and on-chain explorer links
+- Build the first public dashboard for tracking vault status
+
+### Q2 2026: Builder feedback and product refinement
+
+- Improve UX based on builder and community feedback
+- Add better vault indexing and wallet-based vault discovery
+- Improve vault analytics, claim status, and activity history
+- Add public usage examples for contributors, grants, and community rewards
+- Polish mobile experience and dashboard performance
+
+### Q3 2026: Advanced distribution flows
+
+- Add DAO grant and contributor reward templates
+- Explore multi-recipient vault creation
+- Add richer dashboard data for teams and recipients
+- Improve proof sharing for communities and grant programs
+- Research reusable vault templates for ecosystem campaigns
+
+### Q4 2026: Security, scalability, and expansion research
+
+- Prepare for security review and audit readiness
+- Improve contract safety, validation, and edge-case handling
+- Research ERC-20 support for future token vesting
+- Explore mainnet readiness if OPN ecosystem conditions are ready
+- Document integration paths for OPN builders and ecosystem partners
+
+### Long-term Vision
+
+VestFlow aims to become a reusable fund distribution layer for the OPN ecosystem.
+
+The goal is to help builders, DAOs, grant programs, contributors, and communities manage vesting, rewards, treasury payouts, and launch unlocks transparently on-chain.
+
+Instead of relying on manual payments, private spreadsheets, or trust-based promises, VestFlow turns fund distribution into a verifiable smart contract workflow on OPN Chain.
 
 ## Changelog
 

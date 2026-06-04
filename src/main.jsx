@@ -1,6 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { DotLottieReact } from "@lottiefiles/dotlottie-react";
 import { ethers, Contract, JsonRpcProvider, formatEther, isAddress, parseEther } from "ethers";
 import {
   Activity,
@@ -16,6 +15,7 @@ import {
   LogOut,
   Map,
   Moon,
+  SearchCheck,
   ShieldCheck,
   Sun,
   Wallet,
@@ -40,6 +40,15 @@ const EXPLORER_URL = "https://testnet.iopn.tech/address/0x5E0d0146804E6c34f748CE
 const GITHUB_URL = "https://github.com/ekypanawa/vestflow-protocol";
 const DAPP_URL = "https://vestflow-protocol.vercel.app";
 const METAMASK_DAPP_URL = "https://metamask.app.link/dapp/vestflow-protocol.vercel.app";
+const OPN_BALANCE_LOGO = "/opn-balance-logo.png";
+const GAS_BUFFER_OPN = 0.005;
+const NOTE_OPTIONS = ["Contributor Reward", "Grant Distribution", "Team Vesting", "Community Campaign", "Ecosystem Reserve"];
+const CUSTOM_NOTE_OPTION = "Other / Custom note";
+const DURATION_PRESETS = [
+  { label: "7 days", days: 7 },
+  { label: "30 days", days: 30 },
+  { label: "90 days", days: 90 }
+];
 
 const ABI = [
   "function createVault(address recipient,uint64 cliffSeconds,uint64 durationSeconds,string title) payable returns (uint256)",
@@ -57,6 +66,7 @@ const ABI = [
 const navItems = [
   { label: "Home", id: "home", Icon: Home },
   { label: "Lock", id: "lock", Icon: LockKeyhole },
+  { label: "Track & Claim", id: "track", Icon: SearchCheck },
   { label: "Proof", id: "proof", Icon: ShieldCheck },
   { label: "Guide", id: "guide", Icon: Workflow },
   { label: "Roadmap", id: "roadmap", Icon: Map },
@@ -66,6 +76,31 @@ const navItems = [
 function shortAddress(value) {
   if (!value) return "";
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function formatWalletBalance(value) {
+  if (!value) return "--";
+  const formatted = Number(value);
+  if (!Number.isFinite(formatted)) return "--";
+  return formatted.toLocaleString(undefined, {
+    maximumFractionDigits: formatted >= 1 ? 4 : 6
+  });
+}
+
+function normalizeDecimalInput(value) {
+  return String(value || "").trim().replace(",", ".");
+}
+
+function formatAmountInput(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "";
+  return parsed.toFixed(6).replace(/\.?0+$/, "");
+}
+
+function getFutureDateTimeLocal(days) {
+  const date = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
 function getWalletDisplayName(wallet) {
@@ -230,16 +265,123 @@ function getWalletNotFoundMessage() {
 }
 
 function getVaultStatus(vault) {
-  if (!vault) return "Not loaded";
+  return getVaultStatusDetails(vault).label;
+}
+
+function getVaultStatusDetails(vault) {
+  if (!vault) return { label: "Not loaded", tone: "claimed", helper: "" };
   const amount = BigInt(vault.amountRaw || 0);
   const claimed = BigInt(vault.claimedRaw || 0);
   const vested = BigInt(vault.vestedRaw || 0);
   const claimable = BigInt(vault.claimableRaw || 0);
+  const remaining = amount > claimed ? amount - claimed : 0n;
+  const closeToRemaining = remaining > 0n && claimable > 0n && (claimable >= remaining || remaining - claimable <= 1n);
 
-  if (amount > 0n && claimed >= amount) return "Claimed";
-  if (claimable > 0n) return "Ready to Claim";
-  if (vested > 0n) return "Partially Vested";
-  return "Locked";
+  if (amount > 0n && claimed >= amount) {
+    return { label: "Claimed", tone: "claimed", helper: "" };
+  }
+  if (claimable === 0n) {
+    return { label: "Vesting in Progress", tone: "vesting", helper: "No OPN is claimable yet." };
+  }
+  if (!closeToRemaining && claimable < remaining) {
+    return { label: "Partially Vested", tone: "partial", helper: "Small amount available" };
+  }
+  if (claimable > 0n && closeToRemaining) {
+    return { label: "Ready to Claim", tone: "ready", helper: "" };
+  }
+  return { label: "Vesting in Progress", tone: "vesting", helper: "No OPN is claimable yet." };
+}
+
+function getVaultUnlockNote(vault) {
+  if (!vault) return "";
+  const cliff = Number(vault.cliff || 0);
+  const duration = Number(vault.duration || 0);
+
+  if (duration > 0 && cliff >= duration) {
+    return "Simple timelock unlocks the full amount after the release date.";
+  }
+  return "Linear vesting unlocks gradually over time. Claimable amount may start small and increase until the release date.";
+}
+
+function getVaultLockupLabel(vault) {
+  if (!vault) return "";
+  const cliff = Number(vault.cliff || 0);
+  const duration = Number(vault.duration || 0);
+  return duration > 0 && cliff >= duration ? "Simple Timelock" : "Linear Vesting";
+}
+
+function getVaultReleaseDate(vault) {
+  if (!vault?.start || !vault?.duration) return "";
+  const releaseTimestamp = (Number(vault.start) + Number(vault.duration)) * 1000;
+  if (!Number.isFinite(releaseTimestamp) || releaseTimestamp <= 0) return "";
+  return new Date(releaseTimestamp).toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function VaultStatus({ vault }) {
+  const status = vault?.cancelled
+    ? { label: "Cancelled", tone: "claimed", helper: "" }
+    : getVaultStatusDetails(vault);
+  const unlockNote = getVaultUnlockNote(vault);
+
+  return (
+    <div className="vault-status-row">
+      <b>Status:</b>
+      <div>
+        <span className={`vault-status-badge ${status.tone}`}>{status.label}</span>
+        {status.helper ? <span className={`vault-status-helper ${status.tone}`}>{status.helper}</span> : null}
+        {unlockNote ? <p className="vault-unlock-note">{unlockNote}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function TrackVaultDetails({ vault, vaultId, onCopyRecipient }) {
+  const status = vault?.cancelled
+    ? { label: "Cancelled", tone: "claimed", helper: "" }
+    : getVaultStatusDetails(vault);
+  const unlockNote = getVaultUnlockNote(vault);
+  const releaseDate = getVaultReleaseDate(vault);
+  const lockupStyle = getVaultLockupLabel(vault);
+
+  return (
+    <div className="vault-summary">
+      <div className="claim-summary">
+        <div className="claim-summary-amount">
+          <span>Claimable</span>
+          <strong className="claimable-value">{vault.claimable || "0.0"} OPN</strong>
+        </div>
+        <div className="claim-summary-status">
+          <span className={`status-badge ${status.tone}`}>{status.label}</span>
+          {status.helper ? <small className={`status-helper ${status.tone}`}>{status.helper}</small> : null}
+        </div>
+      </div>
+      {unlockNote ? <p className="vesting-note">{unlockNote}</p> : null}
+      <div className="vault-summary-grid">
+        <div><span>Title</span><strong>{vault.title || "Untitled"}</strong></div>
+        <div>
+          <span>Recipient</span>
+          <div className="recipient-summary">
+            <code>{shortAddress(vault.recipient)}</code>
+            <button type="button" onClick={onCopyRecipient} aria-label="Copy recipient address">
+              <Copy aria-hidden="true" size={14} />
+            </button>
+          </div>
+        </div>
+        <div><span>Total</span><strong>{vault.amount} OPN</strong></div>
+        <div><span>Claimed</span><strong>{vault.claimed} OPN</strong></div>
+        <div><span>Vested</span><strong>{vault.vested || "0.0"} OPN</strong></div>
+        <div><span>Vault ID</span><strong>{vaultId || "None"}</strong></div>
+        {lockupStyle ? <div><span>Lockup Style</span><strong>{lockupStyle}</strong></div> : null}
+        {releaseDate ? <div><span>Release Date</span><strong>{releaseDate}</strong></div> : null}
+      </div>
+    </div>
+  );
 }
 
 function App() {
@@ -252,33 +394,98 @@ function App() {
   const [detectedWallets, setDetectedWallets] = useState(getInjectedWallets);
   const [selectedWalletProvider, setSelectedWalletProvider] = useState(null);
   const [selectedWalletName, setSelectedWalletName] = useState("");
+  const [walletBalance, setWalletBalance] = useState("");
+  const [isBalanceLoading, setIsBalanceLoading] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [activity, setActivity] = useState(getInitialActivity);
-  const [mascotOffset, setMascotOffset] = useState({ x: 0, y: 0 });
-  const [reducedMotion, setReducedMotion] = useState(false);
+  const [activityExpanded, setActivityExpanded] = useState(false);
   const [pendingAction, setPendingAction] = useState("");
   const [assetTab, setAssetTab] = useState("native");
+  const [useCustomRecipient, setUseCustomRecipient] = useState(false);
+  const [durationPreset, setDurationPreset] = useState("custom");
+  const [noteOption, setNoteOption] = useState("Contributor Reward");
+  const [formChangedAfterReceipt, setFormChangedAfterReceipt] = useState(false);
   const [form, setForm] = useState({
     recipient: "",
     amount: "0.01",
     lockupStyle: "linear",
     releaseDate: getDefaultReleaseDate(),
-    note: "Contributor Vesting Vault"
+    note: "Contributor Reward"
   });
   const [vaultId, setVaultId] = useState("");
   const [vaultInfo, setVaultInfo] = useState(null);
+  const [myVaults, setMyVaults] = useState([]);
+  const [isVaultListLoading, setIsVaultListLoading] = useState(false);
+  const [vaultLoadError, setVaultLoadError] = useState("");
+  const [showVaultLoadSlowHint, setShowVaultLoadSlowHint] = useState(false);
+  const [isVaultLoading, setIsVaultLoading] = useState(false);
   const [nextVaultId, setNextVaultId] = useState("...");
   const [lastRefreshed, setLastRefreshed] = useState("");
   const [proofReceipt, setProofReceipt] = useState(null);
   const walletMenuRef = useRef(null);
+  const releaseDateInputRef = useRef(null);
 
   const contractReady = useMemo(() => Boolean(VESTFLOW_ADDRESS), []);
   const contractStatus = account ? "Connected" : "Not Connected";
   const isMobileBrowser = useMemo(() => isMobileUserAgent(), []);
+  const displayedWalletBalance = isBalanceLoading ? "..." : formatWalletBalance(walletBalance);
+  const recipientAddress = useCustomRecipient ? form.recipient.trim() : account;
+  const amountValue = normalizeDecimalInput(form.amount);
+  const parsedAmountValue = Number(amountValue);
+  const parsedWalletBalance = Number(walletBalance);
+  const hasKnownWalletBalance = Boolean(walletBalance) && Number.isFinite(parsedWalletBalance);
+  const amountSliderValue = hasKnownWalletBalance && parsedWalletBalance > 0 && Number.isFinite(parsedAmountValue)
+    ? Math.min(100, Math.max(0, Math.round((parsedAmountValue / parsedWalletBalance) * 100)))
+    : 0;
+  const lockupLabel = form.lockupStyle === "timelock" ? "Simple Timelock" : "Linear Vesting";
+  const lockupBehavior = form.lockupStyle === "timelock"
+    ? "Unlocks full amount after release date."
+    : "Unlocks gradually over time.";
+  const showLockPreview = !proofReceipt || formChangedAfterReceipt;
+  const previewNote = form.note.trim() || "VestFlow Lock";
   const hasAvailableWalletProvider = useMemo(
     () => Boolean(selectedWalletProvider?.request || window.ethereum?.request || detectedWallets.some((wallet) => getWalletProvider(wallet)?.request)),
     [detectedWallets, selectedWalletProvider]
   );
+
+  const refreshWalletBalance = useCallback(async (targetAccount = account, providerOverride = null) => {
+    if (!targetAccount) {
+      setWalletBalance("");
+      setIsBalanceLoading(false);
+      return;
+    }
+
+    const injectedProvider = providerOverride || selectedWalletProvider || window.ethereum;
+    if (!injectedProvider?.request) {
+      setWalletBalance("");
+      setIsBalanceLoading(false);
+      return;
+    }
+
+    try {
+      setIsBalanceLoading(true);
+      const provider = new ethers.BrowserProvider(injectedProvider);
+      const balanceWei = await provider.getBalance(targetAccount);
+      setWalletBalance(formatEther(balanceWei));
+    } catch {
+      setWalletBalance("");
+    } finally {
+      setIsBalanceLoading(false);
+    }
+  }, [account, selectedWalletProvider]);
+
+  function updateLockForm(updates) {
+    setForm((currentForm) => ({
+      ...currentForm,
+      ...updates
+    }));
+    setFormChangedAfterReceipt(true);
+  }
+
+  function handleNoteOptionChange(value) {
+    setNoteOption(value);
+    updateLockForm({ note: value === CUSTOM_NOTE_OPTION ? "" : value });
+  }
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -322,21 +529,60 @@ function App() {
   }, [walletDropdownOpen]);
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)");
-    if (!mediaQuery) return;
+    const selectedVaultId = vaultId.trim();
+    if (!selectedVaultId) {
+      setVaultInfo(null);
+      setIsVaultLoading(false);
+      return;
+    }
 
-    const handleMotionPreference = () => setReducedMotion(mediaQuery.matches);
-    handleMotionPreference();
-    mediaQuery.addEventListener?.("change", handleMotionPreference);
+    const timeoutId = window.setTimeout(() => {
+      loadSelectedVaultData(selectedVaultId);
+    }, 500);
 
-    return () => {
-      mediaQuery.removeEventListener?.("change", handleMotionPreference);
-    };
-  }, []);
+    return () => window.clearTimeout(timeoutId);
+  }, [vaultId]);
 
   useEffect(() => {
-    loadLiveContractData();
-  }, [vaultId]);
+    if (account) {
+      loadMyVaults(false);
+    } else {
+      setMyVaults([]);
+    }
+  }, [account]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return;
+
+    const revealTargets = Array.from(
+      document.querySelectorAll("[data-reveal], .reveal, .reveal-up, .reveal-left, .reveal-right, .reveal-scale")
+    );
+    if (!revealTargets.length) return;
+
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (prefersReducedMotion) {
+      revealTargets.forEach((element) => element.classList.add("is-visible"));
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      {
+        threshold: 0.12,
+        rootMargin: "0px 0px -80px 0px"
+      }
+    );
+
+    revealTargets.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [activePage, activityExpanded, proofReceipt, vaultInfo, myVaults.length]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -363,22 +609,41 @@ function App() {
     if (!walletProvider?.on) return;
 
     const handleAccountsChanged = (accounts) => {
-      setAccount(accounts?.[0] || "");
-      if (accounts?.[0]) {
+      const nextAccount = accounts?.[0] || "";
+      setAccount(nextAccount);
+      if (nextAccount) {
         notify("Wallet connected", "Wallet account changed.");
-        addActivity("Wallet Connected", `Connected ${shortAddress(accounts[0])}.`);
+        addActivity("Wallet Connected", `Connected ${shortAddress(nextAccount)}.`);
+        refreshWalletBalance(nextAccount, walletProvider);
       } else {
+        setWalletBalance("");
+        setIsBalanceLoading(false);
         notify("Wallet disconnected", "Wallet disconnected.");
         addActivity("Wallet Disconnected", "Local wallet session cleared.");
       }
     };
 
+    const handleChainChanged = () => {
+      if (account) refreshWalletBalance(account, walletProvider);
+    };
+
     walletProvider.on("accountsChanged", handleAccountsChanged);
+    walletProvider.on("chainChanged", handleChainChanged);
 
     return () => {
       walletProvider.removeListener?.("accountsChanged", handleAccountsChanged);
+      walletProvider.removeListener?.("chainChanged", handleChainChanged);
     };
-  }, [selectedWalletProvider]);
+  }, [account, refreshWalletBalance, selectedWalletProvider]);
+
+  useEffect(() => {
+    if (account) {
+      refreshWalletBalance(account);
+    } else {
+      setWalletBalance("");
+      setIsBalanceLoading(false);
+    }
+  }, [account, refreshWalletBalance]);
 
   function notify(title, description = "", type = "info") {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -410,6 +675,7 @@ function App() {
       "Recipient address is required.",
       "Invalid recipient address.",
       "Amount must be greater than 0.",
+      "Amount exceeds wallet balance.",
       "Release date must be in the future.",
       "Enter a Vault ID first.",
       "Vault ID must be a valid number.",
@@ -471,6 +737,7 @@ function App() {
       const signer = await provider.getSigner();
       const selectedAccount = await signer.getAddress();
       setAccount(selectedAccount);
+      await refreshWalletBalance(selectedAccount, walletProvider);
       setWalletDropdownOpen(false);
       setWalletSelectorOpen(false);
       notify("Wallet connected", `Connected ${walletName} to OPN Testnet.`, "success");
@@ -539,12 +806,15 @@ function App() {
       // Some wallets do not support permission revocation; local state still signs out.
     } finally {
       setAccount("");
+      setWalletBalance("");
+      setIsBalanceLoading(false);
       setSelectedWalletProvider(null);
       setSelectedWalletName("");
       setForm((currentForm) => ({
         ...currentForm,
         recipient: currentForm.recipient && account && currentForm.recipient.toLowerCase() === account.toLowerCase() ? "" : currentForm.recipient
       }));
+      setFormChangedAfterReceipt(true);
       setWalletDropdownOpen(false);
       notify("Wallet disconnected", "Local wallet session cleared.", "success");
       addActivity("Wallet Disconnected", "Local wallet session cleared.");
@@ -561,6 +831,148 @@ function App() {
   function getReadContract() {
     const provider = new JsonRpcProvider(OPN_TESTNET.rpcUrls[0]);
     return new Contract(VESTFLOW_ADDRESS, ABI, provider);
+  }
+
+  function mapVaultInfo(data, claimable, vested) {
+    return {
+      creator: data.creator,
+      recipient: data.recipient,
+      amount: formatEther(data.amount),
+      amountRaw: data.amount.toString(),
+      claimed: formatEther(data.claimed),
+      claimedRaw: data.claimed.toString(),
+      start: Number(data.start),
+      cliff: Number(data.cliff),
+      duration: Number(data.duration),
+      cancelled: data.cancelled,
+      title: data.title,
+      claimable: formatEther(claimable),
+      claimableRaw: claimable.toString(),
+      vested: formatEther(vested),
+      vestedRaw: vested.toString()
+    };
+  }
+
+  async function readVaultInfo(contract, selectedVaultId) {
+    const data = await contract.vaults(selectedVaultId);
+    const claimable = await contract.claimableAmount(selectedVaultId);
+    const vested = await contract.vestedAmount(selectedVaultId);
+    return {
+      info: mapVaultInfo(data, claimable, vested),
+      claimable
+    };
+  }
+
+  async function loadSelectedVaultData(selectedVaultId = vaultId.trim()) {
+    if (!selectedVaultId) {
+      setVaultInfo(null);
+      return null;
+    }
+    if (!/^\d+$/.test(selectedVaultId)) {
+      setVaultInfo(null);
+      return null;
+    }
+
+    try {
+      setIsVaultLoading(true);
+      const contract = getReadContract();
+      const { info } = await readVaultInfo(contract, selectedVaultId);
+      setVaultInfo(info);
+      setLastRefreshed(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      return info;
+    } catch (error) {
+      setVaultInfo(null);
+      reportError(error);
+      return null;
+    } finally {
+      setIsVaultLoading(false);
+    }
+  }
+
+  async function loadMyVaults(showToast = true) {
+    if (!account) {
+      setMyVaults([]);
+      setVaultLoadError("");
+      setShowVaultLoadSlowHint(false);
+      return;
+    }
+
+    let slowHintTimer;
+    try {
+      setIsVaultListLoading(true);
+      setVaultLoadError("");
+      setShowVaultLoadSlowHint(false);
+      slowHintTimer = window.setTimeout(() => setShowVaultLoadSlowHint(true), 2000);
+      const contract = getReadContract();
+      const nextId = await contract.nextVaultId();
+      setNextVaultId(nextId.toString());
+      const totalVaults = Number(nextId);
+      const accountLower = account.toLowerCase();
+      const vaults = [];
+
+      for (let index = 0; index < totalVaults; index += 1) {
+        try {
+          const { info } = await readVaultInfo(contract, String(index));
+          const isRecipient = info.recipient?.toLowerCase() === accountLower;
+          const isCreator = info.creator?.toLowerCase() === accountLower;
+          if (isRecipient || isCreator) {
+            vaults.push({ id: String(index), ...info });
+          }
+        } catch {
+          // Skip vault IDs that cannot be read without mutating UI state.
+        }
+      }
+
+      setMyVaults(vaults);
+      if (vaultId.trim() && /^\d+$/.test(vaultId.trim())) {
+        await loadSelectedVaultData(vaultId.trim());
+      }
+      if (showToast) notify("Vault list refreshed.", "", "success");
+    } catch (error) {
+      setVaultLoadError("Unable to load vaults. You can still enter a Vault ID manually.");
+      reportError(error);
+    } finally {
+      window.clearTimeout(slowHintTimer);
+      setIsVaultListLoading(false);
+      setShowVaultLoadSlowHint(false);
+    }
+  }
+
+  function selectVault(vault) {
+    setVaultId(vault.id);
+    setVaultInfo(vault);
+    loadSelectedVaultData(vault.id);
+  }
+
+  function updateAmountFromBalance(percent) {
+    if (!hasKnownWalletBalance || parsedWalletBalance <= 0) return;
+    const nextAmount = parsedWalletBalance * (percent / 100);
+    updateLockForm({ amount: formatAmountInput(nextAmount) });
+  }
+
+  function setMaxAmount() {
+    if (!hasKnownWalletBalance || parsedWalletBalance <= 0) return;
+    const nextAmount = parsedWalletBalance > GAS_BUFFER_OPN ? parsedWalletBalance - GAS_BUFFER_OPN : 0;
+    if (nextAmount <= 0) {
+      notify("Not enough balance after gas buffer.", "", "error");
+      return;
+    }
+    updateLockForm({ amount: formatAmountInput(nextAmount) });
+  }
+
+  function applyDurationPreset(days) {
+    setDurationPreset(`${days} days`);
+    updateLockForm({ releaseDate: getFutureDateTimeLocal(days) });
+  }
+
+  function selectCustomDuration() {
+    setDurationPreset("custom");
+    setFormChangedAfterReceipt(true);
+    releaseDateInputRef.current?.focus();
+  }
+
+  function updateAmountInput(value) {
+    updateLockForm({ amount: value.replace(",", ".") });
   }
 
   async function loadLiveContractData(manual = false) {
@@ -583,26 +995,8 @@ function App() {
       if (!selectedVaultId) {
         setVaultInfo(null);
       } else if (/^\d+$/.test(selectedVaultId)) {
-        const data = await contract.vaults(selectedVaultId);
-        const claimable = await contract.claimableAmount(selectedVaultId);
-        const vested = await contract.vestedAmount(selectedVaultId);
-        setVaultInfo({
-          creator: data.creator,
-          recipient: data.recipient,
-          amount: formatEther(data.amount),
-          amountRaw: data.amount.toString(),
-          claimed: formatEther(data.claimed),
-          claimedRaw: data.claimed.toString(),
-          start: Number(data.start),
-          cliff: Number(data.cliff),
-          duration: Number(data.duration),
-          cancelled: data.cancelled,
-          title: data.title,
-          claimable: formatEther(claimable),
-          claimableRaw: claimable.toString(),
-          vested: formatEther(vested),
-          vestedRaw: vested.toString()
-        });
+        const { info } = await readVaultInfo(contract, selectedVaultId);
+        setVaultInfo(info);
       } else {
         setVaultInfo(null);
       }
@@ -627,11 +1021,18 @@ function App() {
   }
 
   function validateLockForm() {
-    if (!form.recipient.trim()) throw new Error("Recipient address is required.");
-    if (!isAddress(form.recipient.trim())) throw new Error("Invalid recipient address.");
-    const parsedAmount = Number(form.amount);
-    if (!form.amount || !Number.isFinite(parsedAmount) || parsedAmount <= 0) throw new Error("Amount must be greater than 0.");
-    return getLockSeconds();
+    const selectedRecipient = useCustomRecipient ? form.recipient.trim() : account;
+    const selectedAmount = normalizeDecimalInput(form.amount);
+    if (!selectedRecipient) throw new Error(useCustomRecipient ? "Recipient address is required." : "Connect wallet first.");
+    if (!isAddress(selectedRecipient)) throw new Error("Invalid recipient address.");
+    const parsedAmount = Number(selectedAmount);
+    if (!selectedAmount || !/^\d*\.?\d+$/.test(selectedAmount) || !Number.isFinite(parsedAmount) || parsedAmount <= 0) throw new Error("Amount must be greater than 0.");
+    if (hasKnownWalletBalance && parsedAmount > parsedWalletBalance) throw new Error("Amount exceeds wallet balance.");
+    return {
+      lockSeconds: getLockSeconds(),
+      recipient: selectedRecipient,
+      amount: selectedAmount
+    };
   }
 
   function getValidVaultId() {
@@ -645,7 +1046,7 @@ function App() {
     try {
       if (!account) throw new Error("Connect wallet first.");
       if (assetTab !== "native") throw new Error("ERC-20 support is coming soon. This contract currently supports native OPN only.");
-      const lockSeconds = validateLockForm();
+      const { lockSeconds, recipient, amount } = validateLockForm();
       const cliffSeconds = BigInt(form.lockupStyle === "timelock" ? lockSeconds : 0);
       const durationSeconds = BigInt(lockSeconds);
       const title = form.note.trim() || "VestFlow Lock";
@@ -654,66 +1055,31 @@ function App() {
       notify("Creating lock", "Confirm the transaction in your wallet.");
       const contract = await getContract();
       const predictedVaultId = (await contract.nextVaultId()).toString();
-      const tx = await contract.createVault(form.recipient.trim(), cliffSeconds, durationSeconds, title, {
-        value: parseEther(form.amount)
+      const tx = await contract.createVault(recipient, cliffSeconds, durationSeconds, title, {
+        value: parseEther(amount)
       });
       notify("Transaction submitted", shortAddress(tx.hash));
       await tx.wait();
 
       setProofReceipt({
         vaultId: predictedVaultId,
-        recipient: form.recipient.trim(),
-        amount: form.amount,
+        recipient,
+        amount,
         lockupStyle: form.lockupStyle === "timelock" ? "Simple Timelock" : "Linear Vesting",
         releaseDate: form.releaseDate,
         txHash: tx.hash
       });
+      setFormChangedAfterReceipt(false);
       setVaultId(predictedVaultId);
       notify("Vault created successfully", `Vault ID: ${predictedVaultId}`, "success");
-      addActivity("Vault Created", `Vault ID ${predictedVaultId} - ${form.amount} OPN locked for ${shortAddress(form.recipient.trim())}.`, tx.hash);
+      addActivity("Vault Created", `Vault ID ${predictedVaultId} - ${amount} OPN locked for ${shortAddress(recipient)}.`, tx.hash);
+      await refreshWalletBalance(account);
+      await loadMyVaults(false);
       await loadLiveContractData(false);
     } catch (error) {
       reportError(error);
     } finally {
       setPendingAction("");
-    }
-  }
-
-  async function loadVault(silent = false) {
-    try {
-      if (!account) throw new Error("Connect wallet first.");
-      const selectedVaultId = getValidVaultId();
-      if (!silent) setPendingAction("check");
-      if (!silent) notify("Checking claimable amount", `Vault ID ${selectedVaultId}.`);
-      const contract = getReadContract();
-      const data = await contract.vaults(selectedVaultId);
-      const claimable = await contract.claimableAmount(selectedVaultId);
-      const vested = await contract.vestedAmount(selectedVaultId);
-      setVaultInfo({
-        creator: data.creator,
-        recipient: data.recipient,
-        amount: formatEther(data.amount),
-        amountRaw: data.amount.toString(),
-        claimed: formatEther(data.claimed),
-        claimedRaw: data.claimed.toString(),
-        start: Number(data.start),
-        cliff: Number(data.cliff),
-        duration: Number(data.duration),
-        cancelled: data.cancelled,
-        title: data.title,
-        claimable: formatEther(claimable),
-        claimableRaw: claimable.toString(),
-        vested: formatEther(vested),
-        vestedRaw: vested.toString()
-      });
-      if (!silent) {
-        notify("Claimable amount loaded", `${formatEther(claimable)} OPN claimable.`, "success");
-        addActivity("Claim Checked", `Vault ${selectedVaultId}: ${formatEther(claimable)} OPN claimable.`);
-      }
-    } catch (error) {
-      reportError(error);
-    } finally {
-      if (!silent) setPendingAction("");
     }
   }
 
@@ -748,26 +1114,21 @@ function App() {
       const contract = new Contract(VESTFLOW_ADDRESS, ABI, signer);
       const tx = await contract.claim(selectedVaultId);
       notify("Claim transaction submitted", shortAddress(tx.hash));
-      await tx.wait();
+      const receipt = await tx.wait();
+      if (receipt?.status !== 1) {
+        throw new Error("Claim transaction failed.");
+      }
       notify("Claim successful.", `Tx: ${shortAddress(tx.hash)}`, "success");
       addActivity("Claim Executed", `Vault ${selectedVaultId} claimed successfully.`, tx.hash);
-      await loadVault(true);
+      await refreshWalletBalance(account);
+      await loadSelectedVaultData(selectedVaultId);
+      await loadMyVaults(false);
       await loadLiveContractData(false);
     } catch (error) {
       reportError(new Error(normalizeWalletError(error)));
     } finally {
       setPendingAction("");
     }
-  }
-
-  function handleMascotMove(event) {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width - 0.5) * 2;
-    const y = ((event.clientY - rect.top) / rect.height - 0.5) * 2;
-    setMascotOffset({
-      x: Math.max(-1, Math.min(1, x)),
-      y: Math.max(-1, Math.min(1, y))
-    });
   }
 
   return (
@@ -808,6 +1169,10 @@ function App() {
             {account ? (
               <>
                 <span className="status-dot" />
+                <span className="wallet-balance-pill">
+                  <img src={OPN_BALANCE_LOGO} alt="" />
+                  <span>{displayedWalletBalance} OPN</span>
+                </span>
                 <span>{shortAddress(account)}</span>
                 <ChevronDown aria-hidden="true" size={16} />
               </>
@@ -821,6 +1186,13 @@ function App() {
               <div className="dropdown-address">
                 <Wallet aria-hidden="true" size={18} />
                 <code>{selectedWalletName ? `${selectedWalletName}: ${account}` : account}</code>
+              </div>
+              <div className="dropdown-balance">
+                <img src={OPN_BALANCE_LOGO} alt="" />
+                <div>
+                  <span>OPN Balance</span>
+                  <strong>{isBalanceLoading ? "..." : `${walletBalance || "--"} OPN`}</strong>
+                </div>
               </div>
               <button onClick={copyAddress} role="menuitem"><Copy aria-hidden="true" size={17} />Copy address</button>
               <button onClick={openWalletExplorer} role="menuitem"><ExternalLink aria-hidden="true" size={17} />View on explorer</button>
@@ -884,7 +1256,7 @@ function App() {
         <div key={activePage} className="page-transition">
         {activePage === "home" && (
           <>
-        <section className="hero page-panel">
+        <section className="hero page-panel reveal reveal-up" data-reveal>
           <div className="hero-grid" aria-hidden="true" />
           <div className="hero-orb" aria-hidden="true" />
           <div className="hero-particles" aria-hidden="true">
@@ -934,29 +1306,29 @@ function App() {
           </section>
         )}
 
-        <section className="quick-stats">
-          <div className="stat-card">
+        <section className="quick-stats" data-reveal>
+          <div className="stat-card reveal reveal-scale" style={{ "--delay": "0ms" }}>
             <span className="stat-icon"><Globe aria-hidden="true" /></span>
             <div className="stat-copy">
               <span className="stat-label">Network</span>
               <strong className="stat-value">OPN Testnet</strong>
             </div>
           </div>
-          <div className="stat-card">
+          <div className="stat-card reveal reveal-scale" style={{ "--delay": "80ms" }}>
             <span className="stat-icon"><Coins aria-hidden="true" /></span>
             <div className="stat-copy">
               <span className="stat-label">Asset</span>
               <strong className="stat-value">Native OPN</strong>
             </div>
           </div>
-          <div className="stat-card">
+          <div className="stat-card reveal reveal-scale" style={{ "--delay": "160ms" }}>
             <span className="stat-icon"><FileCheck aria-hidden="true" /></span>
             <div className="stat-copy">
               <span className="stat-label">Contract</span>
               <strong className="stat-value">Live</strong>
             </div>
           </div>
-          <div className="stat-card">
+          <div className="stat-card reveal reveal-scale" style={{ "--delay": "240ms" }}>
             <span className="stat-icon"><Activity aria-hidden="true" /></span>
             <div className="stat-copy">
               <span className="stat-label">Status</span>
@@ -969,154 +1341,328 @@ function App() {
 
         {activePage === "lock" && (
           <>
-        <section className="dashboard page-panel">
-          <div className="dashboard-column">
-            <div className="card lock-card">
+        <section className="lock-page page-panel">
+            <div className="card lock-card reveal reveal-up" data-reveal>
               <div className="card-heading">
                 <p className="section-kicker">Main Product Dashboard</p>
                 <h2><span>Lock</span> <span className="gradient-title">Assets</span></h2>
                 <p>Secure native OPN under timelocks or vesting schedules.</p>
               </div>
 
-              <div className="tabs" role="tablist" aria-label="Asset type">
-                <button className={assetTab === "native" ? "active" : ""} onClick={() => setAssetTab("native")}>Native OPN</button>
-                <button className={assetTab === "erc20" ? "active" : ""} onClick={() => setAssetTab("erc20")} aria-disabled="true">
-                  ERC-20 Token <span>Coming soon</span>
-                </button>
-              </div>
+              <div className="lock-form-grid">
+                <div className="lock-form-column">
+                  <p className="form-group-title">Recipient & Amount</p>
 
-              {assetTab === "erc20" && (
-                <div className="coming-soon">
-                  ERC-20 locks require a new contract deployment. The current VestFlow contract supports native OPN only.
+                  <div className="tabs" role="tablist" aria-label="Asset type">
+                    <button className={assetTab === "native" ? "active" : ""} onClick={() => {
+                      setAssetTab("native");
+                      setFormChangedAfterReceipt(true);
+                    }}>Native OPN</button>
+                    <button className={assetTab === "erc20" ? "active" : ""} onClick={() => {
+                      setAssetTab("erc20");
+                      setFormChangedAfterReceipt(true);
+                    }} aria-disabled="true">
+                      ERC-20 Token <span>Coming soon</span>
+                    </button>
+                  </div>
+
+                  {assetTab === "erc20" && (
+                    <div className="coming-soon">
+                      ERC-20 locks require a new contract deployment. The current VestFlow contract supports native OPN only.
+                    </div>
+                  )}
+
+                  <div className="form-section">
+                    <div className="section-row">
+                      <label>Recipient</label>
+                      <button
+                        className="text-toggle"
+                        type="button"
+                        onClick={() => {
+                          setUseCustomRecipient((enabled) => !enabled);
+                          setFormChangedAfterReceipt(true);
+                        }}
+                      >
+                        {useCustomRecipient ? "Use connected wallet" : "Send to another recipient"}
+                      </button>
+                    </div>
+                    {!useCustomRecipient ? (
+                      <div className="recipient-card">
+                        <span>Recipient</span>
+                        <strong>{account ? "Connected wallet" : "Connect wallet to set recipient."}</strong>
+                        {account ? <code>{shortAddress(account)}</code> : null}
+                      </div>
+                    ) : (
+                      <>
+                        <input value={form.recipient} onChange={(e) => updateLockForm({ recipient: e.target.value })} placeholder="0x..." />
+                        <small className="field-hint">Use a contributor, grant, team, or campaign recipient wallet.</small>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="form-section">
+                    <div className="section-row">
+                      <label>Amount</label>
+                      <span className="balance-label">Balance: {isBalanceLoading ? "..." : `${formatWalletBalance(walletBalance)} OPN`}</span>
+                    </div>
+                    <input
+                      inputMode="decimal"
+                      min="0"
+                      step="0.0001"
+                      value={form.amount}
+                      onChange={(e) => updateAmountInput(e.target.value)}
+                      onBlur={() => updateLockForm({ amount: formatAmountInput(normalizeDecimalInput(form.amount)) || form.amount })}
+                      placeholder="0.01"
+                    />
+                    {hasKnownWalletBalance ? (
+                      <div className="amount-tools">
+                        <input
+                          className="amount-slider"
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={amountSliderValue}
+                          onChange={(e) => updateAmountFromBalance(Number(e.target.value))}
+                          aria-label="Amount percentage of wallet balance"
+                        />
+                        <div className="chip-row">
+                          <button type="button" onClick={() => updateAmountFromBalance(25)}>25%</button>
+                          <button type="button" onClick={() => updateAmountFromBalance(50)}>50%</button>
+                          <button type="button" onClick={() => updateAmountFromBalance(75)}>75%</button>
+                          <button type="button" onClick={setMaxAmount}>Max</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <small className="field-hint">Balance tools appear after wallet balance loads.</small>
+                    )}
+                  </div>
                 </div>
-              )}
 
-              <label>Recipient Address</label>
-              <input value={form.recipient} onChange={(e) => setForm({ ...form, recipient: e.target.value })} placeholder="0x..." />
+                <div className="lock-form-column">
+                  <p className="form-group-title">Vesting Schedule</p>
 
-              <label>Amount</label>
-              <input type="number" min="0" step="0.0001" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.01" />
-
-              <div className="two">
-                <div>
                   <label>Lockup Style</label>
-                  <select value={form.lockupStyle} onChange={(e) => setForm({ ...form, lockupStyle: e.target.value })}>
+                  <select value={form.lockupStyle} onChange={(e) => updateLockForm({ lockupStyle: e.target.value })}>
                     <option value="timelock">Simple Timelock</option>
                     <option value="linear">Linear Vesting</option>
                   </select>
-                </div>
-                <div>
+
                   <label>Release / End Date</label>
-                  <input type="datetime-local" value={form.releaseDate} onChange={(e) => setForm({ ...form, releaseDate: e.target.value })} />
+                  <input ref={releaseDateInputRef} type="datetime-local" value={form.releaseDate} onChange={(e) => {
+                    setDurationPreset("custom");
+                    updateLockForm({ releaseDate: e.target.value });
+                  }} />
+                  <div className="chip-row duration-presets">
+                    {DURATION_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        className={durationPreset === preset.label ? "active" : ""}
+                        onClick={() => applyDurationPreset(preset.days)}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                    <button type="button" className={durationPreset === "custom" ? "active" : ""} onClick={selectCustomDuration}>Custom</button>
+                  </div>
+                  {durationPreset === "custom" && (
+                    <small className="field-hint duration-helper">Custom date selected. Choose your release date manually.</small>
+                  )}
+
+                  <label>Description / Note</label>
+                  <select value={noteOption} onChange={(e) => handleNoteOptionChange(e.target.value)}>
+                    <option value="" disabled>Choose purpose</option>
+                    {NOTE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                    <option value={CUSTOM_NOTE_OPTION}>{CUSTOM_NOTE_OPTION}</option>
+                  </select>
+                  {noteOption === CUSTOM_NOTE_OPTION && (
+                    <textarea
+                      className="custom-note"
+                      value={form.note}
+                      onChange={(e) => updateLockForm({ note: e.target.value })}
+                      placeholder="Contributor grant, team unlock, DAO reward..."
+                    />
+                  )}
+
+                  {showLockPreview && (
+                    <div className="lock-preview">
+                      <span className="dropdown-label">Preview</span>
+                      <div><span>Recipient</span><strong>{recipientAddress ? (useCustomRecipient ? shortAddress(recipientAddress) : "Connected wallet") : "Connect wallet to set recipient"}</strong></div>
+                      <div><span>Amount</span><strong>{formatAmountInput(amountValue) || "0"} OPN</strong></div>
+                      <div><span>Lockup</span><strong>{lockupLabel}</strong></div>
+                      <div><span>Release</span><strong>{form.releaseDate || "Not set"}</strong></div>
+                      <div><span>Purpose / Note</span><strong>{previewNote}</strong></div>
+                      <p><b>Estimated behavior:</b> {lockupBehavior}</p>
+                    </div>
+                  )}
+                  <button className="primary-action" onClick={createVault} disabled={assetTab !== "native" || Boolean(pendingAction)}>
+                    {pendingAction === "create" ? "Creating Lock..." : "Create Secure Lock"}
+                  </button>
+                </div>
+              </div>
+            </div>
+        </section>
+
+        {proofReceipt && (
+          <section className="proof-receipt reveal reveal-up" data-reveal>
+            <div>
+              <p className="section-kicker">Proof Receipt</p>
+              <h2><span>Vault creation</span> <span className="gradient-title">verified</span></h2>
+            </div>
+            <div className="receipt-grid">
+              <div><span>Vault ID</span><strong>{proofReceipt.vaultId}</strong></div>
+              <div><span>Recipient</span><code>{proofReceipt.recipient}</code></div>
+              <div><span>Amount</span><strong>{proofReceipt.amount} OPN</strong></div>
+              <div><span>Lockup style</span><strong>{proofReceipt.lockupStyle}</strong></div>
+              <div><span>Release date</span><strong>{proofReceipt.releaseDate}</strong></div>
+              <div><span>Transaction hash</span><code>{shortAddress(proofReceipt.txHash)}</code></div>
+            </div>
+            <div className="actions compact">
+              <button onClick={() => {
+                setVaultId(proofReceipt.vaultId);
+                setActivePage("track");
+              }}>Track this Vault</button>
+              <a href={`https://testnet.iopn.tech/tx/${proofReceipt.txHash}`} target="_blank" rel="noreferrer">View transaction on OPN Explorer</a>
+              <button onClick={() => copyText(`VestFlow Proof Receipt\nVault ID: ${proofReceipt.vaultId}\nRecipient: ${proofReceipt.recipient}\nAmount: ${proofReceipt.amount} OPN\nLockup style: ${proofReceipt.lockupStyle}\nRelease date: ${proofReceipt.releaseDate}\nTransaction: https://testnet.iopn.tech/tx/${proofReceipt.txHash}`, "Proof summary copied.")}>Copy Proof Summary</button>
+            </div>
+          </section>
+        )}
+          </>
+        )}
+
+        {activePage === "track" && (
+          <>
+        <section className="claim-center page-panel reveal reveal-up" data-reveal>
+          <div className="claim-center-heading">
+            <h2><span>Track</span> <span className="gradient-title">& Claim</span></h2>
+            <p>Select a vault, review status, and claim vested OPN.</p>
+            <div className="claim-steps" aria-label="Claim flow">
+              <span className="active">1 Select Vault</span>
+              <span>2 Review Status</span>
+              <span>3 Claim OPN</span>
+            </div>
+          </div>
+
+          <div className="card claim-center-card compact-panel reveal reveal-up" data-reveal>
+            <div className="claim-center-card-grid">
+              <div className="vault-selection-panel reveal reveal-left" data-reveal>
+                <div className="card-heading">
+                  <h3>My Vaults</h3>
+                  <p>Select a vault linked to your connected wallet.</p>
+                </div>
+                <div className="my-vaults-toolbar">
+                  <span>{account ? `${myVaults.length} vault${myVaults.length === 1 ? "" : "s"} found` : "Wallet required"}</span>
+                  <button type="button" onClick={() => loadMyVaults(true)} disabled={!account || isVaultListLoading}>
+                    {isVaultListLoading ? "Refreshing..." : "Refresh My Vaults"}
+                  </button>
+                </div>
+                <div className="my-vaults-list">
+                  {!account ? (
+                    <div className="empty-state compact-empty">Connect wallet to load your vaults.</div>
+                  ) : isVaultListLoading ? (
+                    <div className="vault-loading-state">
+                      <span className="loading-dots" aria-hidden="true"><i /><i /><i /></span>
+                      <strong>Loading your vaults</strong>
+                      <p>Reading vault data from OPN Testnet.</p>
+                      {showVaultLoadSlowHint ? <small>This may take a few seconds because VestFlow is reading vaults from the contract.</small> : null}
+                    </div>
+                  ) : vaultLoadError ? (
+                    <div className="empty-state compact-empty">{vaultLoadError}</div>
+                  ) : myVaults.length ? (
+                    myVaults.map((vault) => {
+                      const status = getVaultStatusDetails(vault);
+                      return (
+                        <button
+                          key={vault.id}
+                          type="button"
+                          className={vaultId.trim() === vault.id ? "my-vault-item active" : "my-vault-item"}
+                          onClick={() => selectVault(vault)}
+                        >
+                          <span>
+                            <strong>Vault #{vault.id}</strong>
+                            <small>{vault.title || "Untitled"}</small>
+                          </span>
+                          <span>
+                            <strong>{vault.amount} OPN</strong>
+                            <small>Claimable: {vault.claimable || "0.0"} OPN</small>
+                          </span>
+                          <span className={`status-badge ${status.tone}`}>{status.label}</span>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="empty-state compact-empty">No vaults found for this wallet. Create a lock first or enter a Vault ID manually.</div>
+                  )}
+                </div>
+                <div className="manual-vault-entry">
+                  <label>Manual Vault ID</label>
+                  <input value={vaultId} onChange={(e) => setVaultId(e.target.value)} placeholder="Enter Vault ID" />
+                  <small className="field-hint">Manual entries auto-load after a short delay.</small>
                 </div>
               </div>
 
-              <label>Description / Note</label>
-              <textarea value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Contributor grant, team unlock, DAO reward..." />
-              <button className="primary-action" onClick={createVault} disabled={assetTab !== "native" || Boolean(pendingAction)}>
-                {pendingAction === "create" ? "Creating Lock..." : "Create Secure Lock"}
-              </button>
-            </div>
-
-            <div className="card live-reader">
-              <p className="section-kicker">Live Contract Reader</p>
-              <h2><span>OPN</span> <span className="gradient-title">Contract Data</span></h2>
-              <div className="reader-list">
-                <div><span>Contract Status</span><strong>{contractStatus}</strong></div>
-                <div><span>Network</span><strong>OPN Testnet</strong></div>
-                <div><span>Next Vault ID</span><strong>{nextVaultId}</strong></div>
-                <div><span>Selected Vault ID</span><strong>{vaultId || "None"}</strong></div>
-                <div><span>Claimable Amount</span><strong>{vaultInfo?.claimable || "0.0"} OPN</strong></div>
-                <div><span>Vested Amount</span><strong>{vaultInfo?.vested || "0.0"} OPN</strong></div>
-                <div><span>Contract</span><strong>{shortAddress(VESTFLOW_ADDRESS)}</strong><button onClick={() => copyText(VESTFLOW_ADDRESS, "Contract address copied.")}><Copy aria-hidden="true" size={15} />Copy</button></div>
-                <div><span>Last refreshed</span><strong>{lastRefreshed || "Not yet"}</strong></div>
+              <div className="vault-details-panel reveal reveal-right" data-reveal>
+                <div className="card-heading">
+                  <h3>Vault Status</h3>
+                  <p>Compact status and vesting summary for the selected vault.</p>
+                </div>
+                {isVaultLoading ? (
+                  <div className="empty-state">Loading vault data...</div>
+                ) : vaultInfo ? (
+                  <TrackVaultDetails
+                    vault={vaultInfo}
+                    vaultId={vaultId}
+                    onCopyRecipient={() => copyText(vaultInfo.recipient, "Recipient copied.")}
+                  />
+                ) : (
+                  <div className="empty-state">Select a vault or enter a Vault ID.</div>
+                )}
               </div>
-              <button onClick={() => loadLiveContractData(true)} disabled={Boolean(pendingAction)}>
-                {pendingAction === "refresh" ? "Refreshing..." : "Refresh Data"}
+            </div>
+            <div className="claim-center-actions">
+              <button
+                className={!vaultId.trim() ? "soft-disabled" : ""}
+                onClick={claimVault}
+                disabled={Boolean(pendingAction)}
+              >
+                {pendingAction === "claim" ? "Claiming..." : "Claim Vault"}
               </button>
             </div>
           </div>
 
-          <div className="dashboard-column">
-            <div
-              className={account ? "hero-panel connected-card wallet-unlocked" : "hero-panel connected-card wallet-locked"}
-              onMouseMove={handleMascotMove}
-              onMouseLeave={() => setMascotOffset({ x: 0, y: 0 })}
-            >
-              <div className="connected-card-content">
-                <span>Network</span>
-                <strong>OPN Testnet</strong>
-                <span>Contract</span>
-                <code>{shortAddress(VESTFLOW_ADDRESS)}</code>
-                <span>Supported Asset</span>
-                <strong>Native OPN</strong>
-              </div>
-              <div
-                className="hologram-mascot"
-                style={{
-                  "--holo-x": `${mascotOffset.x * 16}px`,
-                  "--holo-y": `${mascotOffset.y * 12}px`,
-                  "--holo-rotate": `${mascotOffset.x * 5}deg`,
-                  "--holo-light-x": `${50 + mascotOffset.x * 18}%`,
-                  "--holo-light-y": `${42 + mascotOffset.y * 14}%`
-                }}
-                aria-hidden="true"
-              >
-                <div className="hologram-lottie-glow" />
-                <DotLottieReact
-                  src={account ? "/mascot.json" : "/wallet-lock.json"}
-                  loop
-                  autoplay={!reducedMotion}
-                  className="hologram-lottie"
-                />
-              </div>
-            </div>
-
-            <div className="card claim-card">
-              <div className="card-heading">
-                <p className="section-kicker">Claim</p>
-                <h2>Track & Claim</h2>
-                <p>Check claimable native OPN and claim vested funds by vault ID.</p>
-              </div>
-              <label>Vault ID</label>
-              <input value={vaultId} onChange={(e) => setVaultId(e.target.value)} placeholder="Enter vault ID" />
-              <div className="actions compact">
-                <button
-                  className={!vaultId.trim() ? "soft-disabled" : ""}
-                  onClick={() => loadVault()}
-                  disabled={Boolean(pendingAction)}
-                >
-                  {pendingAction === "check" ? "Checking..." : "Check Claimable"}
-                </button>
-                <button
-                  className={!vaultId.trim() ? "soft-disabled" : ""}
-                  onClick={claimVault}
-                  disabled={Boolean(pendingAction)}
-                >
-                  {pendingAction === "claim" ? "Claiming..." : "Claim Vault"}
-                </button>
-              </div>
-              {vaultInfo ? (
-                <div className="vault">
-                  <p><b>Title:</b> {vaultInfo.title || "Untitled"}</p>
-                  <p><b>Recipient:</b> {vaultInfo.recipient}</p>
-                  <p><b>Total:</b> {vaultInfo.amount} OPN</p>
-                  <p><b>Claimed:</b> {vaultInfo.claimed} OPN</p>
-                  <p><b>Vested:</b> {vaultInfo.vested || "0.0"} OPN</p>
-                  <p className="claimable"><b>Claimable:</b> {vaultInfo.claimable} OPN</p>
-                  <p><b>Status:</b> {vaultInfo.cancelled ? "Cancelled" : getVaultStatus(vaultInfo)}</p>
+          <div className="track-claim-support-grid">
+              <div className="card live-reader compact-panel compact-reader reveal reveal-up" data-reveal>
+                <div className="card-heading">
+                  <p className="section-kicker">Contract Summary</p>
+                  <h2><span>OPN</span> <span className="gradient-title">Contract Data</span></h2>
                 </div>
-              ) : (
-                <div className="empty-state">Enter a vault ID and check claimable funds.</div>
-              )}
-            </div>
-
-            <div className="card activity-feed activity-card">
-              <div className="card-heading">
-                <p className="section-kicker">Recent Activity</p>
-                <h2><span>Protocol</span> <span className="gradient-title">Events</span></h2>
+                <div className="reader-list compact-reader-list">
+                  <div><span>Contract Status</span><strong>{contractStatus}</strong></div>
+                  <div><span>Network</span><strong>OPN Testnet</strong></div>
+                  <div><span>Selected Vault ID</span><strong>{vaultId || "None"}</strong></div>
+                  <div><span>Claimable Amount</span><strong>{vaultInfo?.claimable || "0.0"} OPN</strong></div>
+                  <div><span>Vested Amount</span><strong>{vaultInfo?.vested || "0.0"} OPN</strong></div>
+                  <div><span>Contract</span><strong>{shortAddress(VESTFLOW_ADDRESS)}</strong><button onClick={() => copyText(VESTFLOW_ADDRESS, "Contract address copied.")}><Copy aria-hidden="true" size={15} />Copy</button></div>
+                  <div><span>Last refreshed</span><strong>{lastRefreshed || "Not yet"}</strong></div>
+                </div>
               </div>
-              {activity.length ? (
+          </div>
+
+          <div className="card activity-feed activity-card compact-panel compact-activity protocol-events-bottom reveal reveal-up" data-reveal>
+            <div className="activity-toggle-heading">
+              <div>
+                <h2>Protocol Events</h2>
+                <p>Recent wallet and vault activity</p>
+              </div>
+              <span>{activity.length} latest</span>
+              <button type="button" onClick={() => setActivityExpanded((expanded) => !expanded)}>
+                {activityExpanded ? "Hide" : "Show"}
+              </button>
+            </div>
+            {activityExpanded && (
+              activity.length ? (
                 <div className="activity-list">
                   {activity.map((item) => (
                     <div key={item.id} className={item.txHash ? "activity-item has-link" : "activity-item"}>
@@ -1137,37 +1683,16 @@ function App() {
                   ))}
                 </div>
               ) : (
-                <div className="empty-state">No recent activity yet.</div>
-              )}
-            </div>
+                <div className="empty-state compact-empty">No recent activity yet.</div>
+              )
+            )}
           </div>
         </section>
-
-        {proofReceipt && (
-          <section className="proof-receipt">
-            <div>
-              <p className="section-kicker">Proof Receipt</p>
-              <h2><span>Vault creation</span> <span className="gradient-title">verified</span></h2>
-            </div>
-            <div className="receipt-grid">
-              <div><span>Vault ID</span><strong>{proofReceipt.vaultId}</strong></div>
-              <div><span>Recipient</span><code>{proofReceipt.recipient}</code></div>
-              <div><span>Amount</span><strong>{proofReceipt.amount} OPN</strong></div>
-              <div><span>Lockup style</span><strong>{proofReceipt.lockupStyle}</strong></div>
-              <div><span>Release date</span><strong>{proofReceipt.releaseDate}</strong></div>
-              <div><span>Transaction hash</span><code>{shortAddress(proofReceipt.txHash)}</code></div>
-            </div>
-            <div className="actions compact">
-              <a href={`https://testnet.iopn.tech/tx/${proofReceipt.txHash}`} target="_blank" rel="noreferrer">View transaction on OPN Explorer</a>
-              <button onClick={() => copyText(`VestFlow Proof Receipt\nVault ID: ${proofReceipt.vaultId}\nRecipient: ${proofReceipt.recipient}\nAmount: ${proofReceipt.amount} OPN\nLockup style: ${proofReceipt.lockupStyle}\nRelease date: ${proofReceipt.releaseDate}\nTransaction: https://testnet.iopn.tech/tx/${proofReceipt.txHash}`, "Proof summary copied.")}>Copy Proof Summary</button>
-            </div>
-          </section>
-        )}
           </>
         )}
 
         {activePage === "proof" && (
-        <section className="proof page-panel">
+        <section className="proof page-panel reveal reveal-up" data-reveal>
           <div className="proof-intro">
             <p className="section-kicker">On-chain proof</p>
             <h2><span>Live public deployment</span> <span className="gradient-title">on OPN Testnet</span></h2>
@@ -1177,27 +1702,27 @@ function App() {
             </p>
           </div>
           <div className="proof-grid">
-            <div>
+            <div className="reveal reveal-scale" style={{ "--delay": "0ms" }}>
               <span>Contract</span>
               <code>{VESTFLOW_ADDRESS}</code>
               <div className="proof-actions"><a href={EXPLORER_URL} target="_blank" rel="noreferrer">Open</a><button onClick={() => copyText(VESTFLOW_ADDRESS, "Contract address copied.")}><Copy aria-hidden="true" size={15} />Copy</button></div>
             </div>
-            <div>
+            <div className="reveal reveal-scale" style={{ "--delay": "80ms" }}>
               <span>Deploy TX</span>
               <code>{DEPLOY_TX}</code>
               <div className="proof-actions"><a href={`https://testnet.iopn.tech/tx/${DEPLOY_TX}`} target="_blank" rel="noreferrer">Open</a><button onClick={() => copyText(DEPLOY_TX, "Deploy transaction copied.")}><Copy aria-hidden="true" size={15} />Copy</button></div>
             </div>
-            <div>
+            <div className="reveal reveal-scale" style={{ "--delay": "160ms" }}>
               <span>Deployer</span>
               <code>{DEPLOYER}</code>
               <button onClick={() => copyText(DEPLOYER, "Deployer address copied.")}><Copy aria-hidden="true" size={15} />Copy</button>
             </div>
-            <div>
+            <div className="reveal reveal-scale" style={{ "--delay": "240ms" }}>
               <span>GitHub</span>
               <code>github.com/ekypanawa/vestflow-protocol</code>
               <div className="proof-actions"><a href={GITHUB_URL} target="_blank" rel="noreferrer">Open</a><button onClick={() => copyText(GITHUB_URL, "Repository URL copied.")}><Copy aria-hidden="true" size={15} />Copy</button></div>
             </div>
-            <a href={EXPLORER_URL} target="_blank" rel="noreferrer">
+            <a className="reveal reveal-scale" style={{ "--delay": "320ms" }} href={EXPLORER_URL} target="_blank" rel="noreferrer">
               <span>Explorer</span>
               <code>testnet.iopn.tech</code>
             </a>
@@ -1207,32 +1732,32 @@ function App() {
 
         {activePage === "about" && (
           <>
-        <section className="info-grid page-panel">
-          <div className="info-card">
+        <section className="info-grid page-panel reveal reveal-up" data-reveal>
+          <div className="info-card reveal reveal-scale" style={{ "--delay": "0ms" }}>
             <span>Problem</span>
             <h3>Manual payouts are slow and hard to verify.</h3>
             <p>Builder grants, team unlocks, and DAO distributions often depend on off-chain tracking that is hard for recipients to inspect.</p>
           </div>
-          <div className="info-card">
+          <div className="info-card reveal reveal-scale" style={{ "--delay": "80ms" }}>
             <span>Solution</span>
             <h3>Native OPN locks with public proof.</h3>
             <p>VestFlow maps a simple dashboard flow to on-chain vaults with claimable balances, explorer links, and copyable proof receipts.</p>
           </div>
-          <div className="info-card">
+          <div className="info-card reveal reveal-scale" style={{ "--delay": "160ms" }}>
             <span>Builder commitment</span>
             <h3>Shipping in public on OPN Testnet.</h3>
             <p>The MVP keeps the contract, deploy transaction, repository, and test guide visible so OPN Builders can evaluate real integration progress.</p>
           </div>
         </section>
 
-        <section className="use-cases">
+        <section className="use-cases reveal reveal-up" data-reveal>
           <p className="section-kicker">Use cases</p>
           <h2><span>Built for</span> <span className="gradient-title">OPN ecosystem coordination</span></h2>
           <div className="feature-grid">
-            <div><h3>Contributor rewards</h3><p>Stream grants or milestone rewards to builders with public vesting rules.</p></div>
-            <div><h3>DAO allocations</h3><p>Give treasuries a lightweight path for transparent distribution programs.</p></div>
-            <div><h3>Team unlocks</h3><p>Structure founder, core team, and advisor incentives with simple vault mechanics.</p></div>
-            <div><h3>Hackathon prizes</h3><p>Distribute testnet demo funds through verifiable post-event unlock schedules.</p></div>
+            <div className="reveal reveal-scale" style={{ "--delay": "0ms" }}><h3>Contributor rewards</h3><p>Stream grants or milestone rewards to builders with public vesting rules.</p></div>
+            <div className="reveal reveal-scale" style={{ "--delay": "80ms" }}><h3>DAO allocations</h3><p>Give treasuries a lightweight path for transparent distribution programs.</p></div>
+            <div className="reveal reveal-scale" style={{ "--delay": "160ms" }}><h3>Team unlocks</h3><p>Structure founder, core team, and advisor incentives with simple vault mechanics.</p></div>
+            <div className="reveal reveal-scale" style={{ "--delay": "240ms" }}><h3>Hackathon prizes</h3><p>Distribute testnet demo funds through verifiable post-event unlock schedules.</p></div>
           </div>
         </section>
           </>
@@ -1240,7 +1765,7 @@ function App() {
 
         {activePage === "guide" && (
           <>
-        <section className="demo-guide page-panel">
+        <section className="demo-guide page-panel reveal reveal-up" data-reveal>
           <p className="section-kicker">Demo Guide</p>
           <h2><span>How to test</span> <span className="gradient-title">this demo</span></h2>
           <ol>
@@ -1255,37 +1780,79 @@ function App() {
           </ol>
         </section>
 
-        <section className="faq-grid">
-          <div><h3>Is this mainnet?</h3><p>No. This is a testnet demo on OPN Testnet. Do not send mainnet funds.</p></div>
-          <div><h3>What asset is supported?</h3><p>The current contract supports native OPN locks.</p></div>
-          <div><h3>Is ERC-20 supported?</h3><p>Not yet. The ERC-20 tab is marked Coming Soon until a new contract is deployed.</p></div>
-          <div><h3>Where is the contract?</h3><p><a href={EXPLORER_URL} target="_blank" rel="noreferrer">View it on OPN Explorer</a>.</p></div>
+        <section className="faq-grid" data-reveal>
+          <div className="reveal reveal-scale" style={{ "--delay": "0ms" }}><h3>Is this mainnet?</h3><p>No. This is a testnet demo on OPN Testnet. Do not send mainnet funds.</p></div>
+          <div className="reveal reveal-scale" style={{ "--delay": "80ms" }}><h3>What asset is supported?</h3><p>The current contract supports native OPN locks.</p></div>
+          <div className="reveal reveal-scale" style={{ "--delay": "160ms" }}><h3>Is ERC-20 supported?</h3><p>Not yet. The ERC-20 tab is marked Coming Soon until a new contract is deployed.</p></div>
+          <div className="reveal reveal-scale" style={{ "--delay": "240ms" }}><h3>Where is the contract?</h3><p><a href={EXPLORER_URL} target="_blank" rel="noreferrer">View it on OPN Explorer</a>.</p></div>
         </section>
           </>
         )}
 
         {activePage === "roadmap" && (
           <>
-        <section className="roadmap page-panel">
+        <section className="roadmap page-panel reveal reveal-up" data-reveal>
           <p className="section-kicker">Roadmap</p>
           <h2><span className="gradient-title">Q1-Q4 2026</span></h2>
           <div className="timeline">
-            <div><span>Q1 2026</span><p>Testnet deployment, native OPN locks, claimable checks, and claim flow.</p></div>
-            <div><span>Q2 2026</span><p>Builder feedback, vault indexing, analytics, and public usage examples.</p></div>
-            <div><span>Q3 2026</span><p>DAO grant templates, multi-recipient flows, and richer dashboard data.</p></div>
-            <div><span>Q4 2026</span><p>Security hardening, audit preparation, ERC-20 research, and mainnet readiness.</p></div>
+            <div className="reveal reveal-scale" style={{ "--delay": "0ms" }}>
+              <span>Q1 2026</span>
+              <h3>MVP and OPN Testnet deployment</h3>
+              <ul>
+                <li>Deploy VestFlow smart contract on OPN Testnet</li>
+                <li>Support native OPN lock and vesting vaults</li>
+                <li>Add vault creation, claim flow, and proof receipt</li>
+                <li>Add multi-wallet connection and on-chain explorer links</li>
+                <li>Build the first public dashboard for tracking vault status</li>
+              </ul>
+            </div>
+            <div className="reveal reveal-scale" style={{ "--delay": "80ms" }}>
+              <span>Q2 2026</span>
+              <h3>Builder feedback and product refinement</h3>
+              <ul>
+                <li>Improve UX based on builder and community feedback</li>
+                <li>Add better vault indexing and wallet-based vault discovery</li>
+                <li>Improve vault analytics, claim status, and activity history</li>
+                <li>Add public usage examples for contributors, grants, and community rewards</li>
+                <li>Polish mobile experience and dashboard performance</li>
+              </ul>
+            </div>
+            <div className="reveal reveal-scale" style={{ "--delay": "160ms" }}>
+              <span>Q3 2026</span>
+              <h3>Advanced distribution flows</h3>
+              <ul>
+                <li>Add DAO grant and contributor reward templates</li>
+                <li>Explore multi-recipient vault creation</li>
+                <li>Add richer dashboard data for teams and recipients</li>
+                <li>Improve proof sharing for communities and grant programs</li>
+                <li>Research reusable vault templates for ecosystem campaigns</li>
+              </ul>
+            </div>
+            <div className="reveal reveal-scale" style={{ "--delay": "240ms" }}>
+              <span>Q4 2026</span>
+              <h3>Security, scalability, and expansion research</h3>
+              <ul>
+                <li>Prepare for security review and audit readiness</li>
+                <li>Improve contract safety, validation, and edge-case handling</li>
+                <li>Research ERC-20 support for future token vesting</li>
+                <li>Explore mainnet readiness if OPN ecosystem conditions are ready</li>
+                <li>Document integration paths for OPN builders and ecosystem partners</li>
+              </ul>
+            </div>
           </div>
         </section>
-        <section className="vision-card">
-          <p className="section-kicker">Long-term vision</p>
-          <h2><span>Composable fund flow</span> <span className="gradient-title">for OPN builders</span></h2>
-          <p>VestFlow aims to become a reusable distribution layer for grants, contributor incentives, DAO allocations, and launch unlocks across the OPN ecosystem.</p>
+        <section className="vision-card reveal reveal-up" data-reveal>
+          <p className="section-kicker">Long-term Vision</p>
+          <h2><span>Reusable fund distribution</span> <span className="gradient-title">for OPN builders</span></h2>
+          <p>VestFlow aims to become a reusable fund distribution layer for the OPN ecosystem.</p>
+          <p>The goal is to help builders, DAOs, grant programs, contributors, and communities manage vesting, rewards, treasury payouts, and launch unlocks transparently on-chain.</p>
+          <p>Instead of relying on manual payments, private spreadsheets, or trust-based promises, VestFlow turns fund distribution into a verifiable smart contract workflow on OPN Chain.</p>
         </section>
           </>
         )}
 
         {activePage === "about" && (
-        <section className="intro page-panel">
+        <section className="intro page-panel reveal reveal-up" data-reveal>
           <div>
             <p className="section-kicker">About / Builder Commitment</p>
             <h2><span>What is</span> <span className="gradient-title">VestFlow?</span></h2>

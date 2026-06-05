@@ -277,9 +277,10 @@ function getInjectedWallets() {
 }
 
 function getDefaultReleaseDate() {
-  const date = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  const date = new Date(Date.now() + 5 * 60 * 1000);
   date.setSeconds(0, 0);
-  return date.toISOString().slice(0, 16);
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
 function getInitialTheme() {
@@ -481,6 +482,7 @@ function App() {
   const [proofReceipt, setProofReceipt] = useState(null);
   const walletMenuRef = useRef(null);
   const releaseDateInputRef = useRef(null);
+  const proofSuccessRef = useRef(null);
 
   const contractReady = useMemo(() => Boolean(VESTFLOW_ADDRESS), []);
   const contractStatus = account ? "Connected" : "Not Connected";
@@ -495,12 +497,6 @@ function App() {
   const amountSliderValue = hasKnownWalletBalance && parsedWalletBalance > 0 && Number.isFinite(parsedAmountValue)
     ? Math.min(100, Math.max(0, Math.round((parsedAmountValue / parsedWalletBalance) * 100)))
     : 0;
-  const lockupLabel = form.lockupStyle === "timelock" ? "Simple Timelock" : "Linear Vesting";
-  const lockupBehavior = form.lockupStyle === "timelock"
-    ? "Unlocks full amount after release date."
-    : "Unlocks gradually over time.";
-  const showLockPreview = !proofReceipt || formChangedAfterReceipt;
-  const previewNote = form.note.trim() || "VestFlow Lock";
   const hasAvailableWalletProvider = useMemo(
     () => Boolean(selectedWalletProvider?.request || window.ethereum?.request || detectedWallets.some((wallet) => getWalletProvider(wallet)?.request)),
     [detectedWallets, selectedWalletProvider]
@@ -588,7 +584,8 @@ function App() {
 
   useEffect(() => {
     setCountdownNow(Date.now());
-    if (!vaultInfo) return undefined;
+    const releaseTimestamp = getVaultReleaseTimestamp(vaultInfo);
+    if (!releaseTimestamp || releaseTimestamp <= Date.now()) return undefined;
     const intervalId = window.setInterval(() => {
       setCountdownNow(Date.now());
     }, 1000);
@@ -622,7 +619,7 @@ function App() {
     if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return;
 
     const revealTargets = Array.from(
-      document.querySelectorAll("[data-reveal], .reveal, .reveal-up, .reveal-left, .reveal-right, .reveal-scale")
+      document.querySelectorAll("[data-reveal]:not(.is-visible), .reveal:not(.is-visible), .reveal-up:not(.is-visible), .reveal-left:not(.is-visible), .reveal-right:not(.is-visible), .reveal-scale:not(.is-visible)")
     );
     if (!revealTargets.length) return;
 
@@ -649,7 +646,7 @@ function App() {
 
     revealTargets.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
-  }, [activePage, activityExpanded, proofReceipt, vaultInfo, myVaults.length]);
+  }, [activePage, activityExpanded, proofReceipt]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1370,6 +1367,10 @@ function App() {
       });
       setFormChangedAfterReceipt(false);
       setVaultId(predictedVaultId);
+      window.requestAnimationFrame(() => {
+        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        proofSuccessRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      });
       notify("Vault created successfully", `Vault ID: ${predictedVaultId}`, "success");
       addActivity("Vault Created", `Vault ID ${predictedVaultId} - ${amount} OPN locked for ${shortAddress(recipient)}.`, tx.hash);
       await refreshWalletBalance(account);
@@ -1380,6 +1381,32 @@ function App() {
     } finally {
       setPendingAction("");
     }
+  }
+
+  function createAnotherLock() {
+    setProofReceipt(null);
+    setAssetTab("native");
+    setUseCustomRecipient(false);
+    setDurationPreset("custom");
+    setNoteOption("Contributor Reward");
+    setForm({
+      recipient: "",
+      amount: "0.01",
+      lockupStyle: "linear",
+      releaseDate: getDefaultReleaseDate(),
+      note: "Contributor Reward"
+    });
+    setFormChangedAfterReceipt(false);
+    window.requestAnimationFrame(() => {
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      document.querySelector(".lock-page")?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+    });
+  }
+
+  function trackLatestVault() {
+    if (!proofReceipt?.vaultId) return;
+    setVaultId(proofReceipt.vaultId);
+    setActivePage("track");
   }
 
   async function claimVault() {
@@ -1680,6 +1707,7 @@ function App() {
 
         {activePage === "lock" && (
           <>
+        {!proofReceipt ? (
         <section className="lock-page page-panel">
             <div className="card lock-card reveal reveal-up" data-reveal>
               <div className="card-heading">
@@ -1837,17 +1865,6 @@ function App() {
                     />
                   )}
 
-                  {showLockPreview && (
-                    <div className="lock-preview">
-                      <span className="dropdown-label">Preview</span>
-                      <div><span>Recipient</span><strong>{recipientAddress ? (useCustomRecipient ? shortAddress(recipientAddress) : "Connected wallet") : "Connect wallet to set recipient"}</strong></div>
-                      <div><span>Amount</span><strong>{formatAmountInput(amountValue) || "0"} OPN</strong></div>
-                      <div><span>Lockup</span><strong>{lockupLabel}</strong></div>
-                      <div><span>Release</span><strong>{form.releaseDate || "Not set"}</strong></div>
-                      <div><span>Purpose / Note</span><strong>{previewNote}</strong></div>
-                      <p><b>Estimated behavior:</b> {lockupBehavior}</p>
-                    </div>
-                  )}
                   <button className="primary-action" onClick={createVault} disabled={assetTab !== "native" || Boolean(pendingAction)}>
                     {pendingAction === "create" ? "Creating Lock..." : "Create Secure Lock"}
                   </button>
@@ -1855,9 +1872,15 @@ function App() {
               </div>
             </div>
         </section>
+        ) : (
+        <section ref={proofSuccessRef} className="lock-page lock-success-screen proof-success-screen page-panel" data-reveal>
+          <div className="lock-success-heading proof-success-heading">
+            <p className="section-kicker">Success</p>
+            <h2><span>Vault created</span> <span className="gradient-title">successfully</span></h2>
+            <p>Your VestFlow lock is now live on OPN Testnet.</p>
+          </div>
 
-        {proofReceipt && (
-          <section className="share-proof-section reveal reveal-up" data-reveal>
+          <div className="share-proof-section">
             <div className="share-proof-3d-wrap">
               <div className="share-proof-card">
                 <div className="share-proof-glow" aria-hidden="true" />
@@ -1894,32 +1917,11 @@ function App() {
               <button type="button" className="share-x-action" onClick={shareProofToX}>Share to X</button>
               <button type="button" className="download-receipt-action" onClick={downloadReceiptPng}>Download Receipt</button>
               <button type="button" className="copy-proof-action" onClick={copyProofSummary}>Copy Proof Summary</button>
+              <button type="button" className="track-vault-action" onClick={trackLatestVault}>Track this Vault</button>
+              <button type="button" className="create-another-action" onClick={createAnotherLock}>Create Another Lock</button>
             </div>
-          </section>
-        )}
-
-        {proofReceipt && (
-          <section className="proof-receipt reveal reveal-up" data-reveal>
-            <div>
-              <p className="section-kicker">Proof Receipt</p>
-              <h2><span>Vault creation</span> <span className="gradient-title">verified</span></h2>
-            </div>
-            <div className="receipt-grid">
-              <div><span>Vault ID</span><strong>{proofReceipt.vaultId}</strong></div>
-              <div><span>Recipient</span><code>{proofReceipt.recipient}</code></div>
-              <div><span>Amount</span><strong>{proofReceipt.amount} OPN</strong></div>
-              <div><span>Lockup style</span><strong>{proofReceipt.lockupStyle}</strong></div>
-              <div><span>Release date</span><strong>{proofReceipt.releaseDate}</strong></div>
-              <div><span>Transaction hash</span><code>{shortAddress(proofReceipt.txHash)}</code></div>
-            </div>
-            <div className="receipt-actions">
-              <button onClick={() => {
-                setVaultId(proofReceipt.vaultId);
-                setActivePage("track");
-              }}>Track this Vault</button>
-              <a href={`https://testnet.iopn.tech/tx/${proofReceipt.txHash}`} target="_blank" rel="noreferrer">View transaction on OPN Explorer</a>
-            </div>
-          </section>
+          </div>
+        </section>
         )}
           </>
         )}

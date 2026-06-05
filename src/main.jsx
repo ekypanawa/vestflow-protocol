@@ -4,6 +4,8 @@ import { ethers, Contract, JsonRpcProvider, formatEther, isAddress, parseEther }
 import {
   Activity,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Coins,
   Copy,
   ExternalLink,
@@ -40,6 +42,7 @@ const EXPLORER_URL = "https://testnet.iopn.tech/address/0x5E0d0146804E6c34f748CE
 const GITHUB_URL = "https://github.com/ekypanawa/vestflow-protocol";
 const DAPP_URL = "https://vestflow-protocol.vercel.app";
 const METAMASK_DAPP_URL = "https://metamask.app.link/dapp/vestflow-protocol.vercel.app";
+const OPN_FAUCET_URL = "https://faucet.iopn.tech";
 const OPN_BALANCE_LOGO = "/opn-balance-logo.png";
 const GAS_BUFFER_OPN = 0.005;
 const NOTE_OPTIONS = ["Contributor Reward", "Grant Distribution", "Team Vesting", "Community Campaign", "Ecosystem Reserve"];
@@ -83,8 +86,48 @@ function formatWalletBalance(value) {
   const formatted = Number(value);
   if (!Number.isFinite(formatted)) return "--";
   return formatted.toLocaleString(undefined, {
-    maximumFractionDigits: formatted >= 1 ? 4 : 6
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4
   });
+}
+
+function formatDisplayAmount(value, decimals = 2) {
+  const formatted = Number(value);
+  if (!Number.isFinite(formatted) || formatted === 0) return Number(0).toFixed(decimals);
+  return formatted.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
+}
+
+function formatReceiptDate(value) {
+  if (!value) return "Not set";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  });
+}
+
+function buildProofSummary(receipt) {
+  if (!receipt) return "";
+  const lines = [
+    "VestFlow Proof Receipt",
+    "",
+    `Vault #${receipt.vaultId} created on OPN Testnet`,
+    `Recipient: ${shortAddress(receipt.recipient)}`,
+    `Amount: ${receipt.amount} OPN`,
+    `Lockup: ${receipt.lockupStyle}`,
+    `Release: ${formatReceiptDate(receipt.releaseDate)}`,
+    `Contract: ${shortAddress(VESTFLOW_ADDRESS)}`,
+    "",
+    `Demo: ${DAPP_URL}`,
+    "",
+    "#IOPn #OPNChain #BuildOnChain"
+  ];
+  return lines.join("\n");
 }
 
 function normalizeDecimalInput(value) {
@@ -244,6 +287,11 @@ function getInitialTheme() {
   return window.localStorage.getItem("vestflow-theme") || "dark";
 }
 
+function getInitialSidebarCollapsed() {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(max-width: 1120px)").matches;
+}
+
 function getInitialActivity() {
   if (typeof window === "undefined") return [];
   try {
@@ -323,6 +371,24 @@ function getVaultReleaseDate(vault) {
   });
 }
 
+function getVaultReleaseTimestamp(vault) {
+  if (!vault?.start || !vault?.duration) return 0;
+  const releaseTimestamp = (Number(vault.start) + Number(vault.duration)) * 1000;
+  return Number.isFinite(releaseTimestamp) && releaseTimestamp > 0 ? releaseTimestamp : 0;
+}
+
+function formatCountdown(targetTimestamp, now = Date.now()) {
+  if (!targetTimestamp) return "Schedule unavailable";
+  const remaining = Math.max(0, targetTimestamp - now);
+  if (remaining <= 0) return "Unlocked";
+  const totalSeconds = Math.floor(remaining / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${days}d ${hours}h ${minutes}m ${seconds}s`;
+}
+
 function VaultStatus({ vault }) {
   const status = vault?.cancelled
     ? { label: "Cancelled", tone: "claimed", helper: "" }
@@ -341,45 +407,34 @@ function VaultStatus({ vault }) {
   );
 }
 
-function TrackVaultDetails({ vault, vaultId, onCopyRecipient }) {
+function TrackVaultDetails({ vault, now }) {
   const status = vault?.cancelled
     ? { label: "Cancelled", tone: "claimed", helper: "" }
     : getVaultStatusDetails(vault);
-  const unlockNote = getVaultUnlockNote(vault);
-  const releaseDate = getVaultReleaseDate(vault);
-  const lockupStyle = getVaultLockupLabel(vault);
+  const isTimelock = getVaultLockupLabel(vault) === "Simple Timelock";
+  const releaseTimestamp = getVaultReleaseTimestamp(vault);
+  const countdownValue = formatCountdown(releaseTimestamp, now);
+  const countdownLabel = isTimelock ? "Unlocks in" : "Fully vested in";
+  const finalCountdownValue = countdownValue === "Unlocked" && !isTimelock ? "Fully vested" : countdownValue;
+  const finalCountdownLabel = countdownValue === "Schedule unavailable" || countdownValue === "Unlocked" ? "Status" : countdownLabel;
 
   return (
     <div className="vault-summary">
       <div className="claim-summary">
         <div className="claim-summary-amount">
           <span>Claimable</span>
-          <strong className="claimable-value">{vault.claimable || "0.0"} OPN</strong>
+          <strong className="claimable-value">{formatDisplayAmount(vault.claimable, 2)} OPN</strong>
         </div>
         <div className="claim-summary-status">
           <span className={`status-badge ${status.tone}`}>{status.label}</span>
           {status.helper ? <small className={`status-helper ${status.tone}`}>{status.helper}</small> : null}
         </div>
       </div>
-      {unlockNote ? <p className="vesting-note">{unlockNote}</p> : null}
-      <div className="vault-summary-grid">
-        <div><span>Title</span><strong>{vault.title || "Untitled"}</strong></div>
-        <div>
-          <span>Recipient</span>
-          <div className="recipient-summary">
-            <code>{shortAddress(vault.recipient)}</code>
-            <button type="button" onClick={onCopyRecipient} aria-label="Copy recipient address">
-              <Copy aria-hidden="true" size={14} />
-            </button>
-          </div>
-        </div>
-        <div><span>Total</span><strong>{vault.amount} OPN</strong></div>
-        <div><span>Claimed</span><strong>{vault.claimed} OPN</strong></div>
-        <div><span>Vested</span><strong>{vault.vested || "0.0"} OPN</strong></div>
-        <div><span>Vault ID</span><strong>{vaultId || "None"}</strong></div>
-        {lockupStyle ? <div><span>Lockup Style</span><strong>{lockupStyle}</strong></div> : null}
-        {releaseDate ? <div><span>Release Date</span><strong>{releaseDate}</strong></div> : null}
+      <div className="vesting-countdown">
+        <span className="countdown-label">{finalCountdownLabel}</span>
+        <strong className="countdown-value">{finalCountdownValue}</strong>
       </div>
+      <p className="vault-status-note">Vault data loads automatically from the selected Vault ID.</p>
     </div>
   );
 }
@@ -389,6 +444,7 @@ function App() {
   const [, setStatus] = useState("Ready to build on OPN Testnet.");
   const [theme, setTheme] = useState(getInitialTheme);
   const [activePage, setActivePage] = useState("home");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialSidebarCollapsed);
   const [walletDropdownOpen, setWalletDropdownOpen] = useState(false);
   const [walletSelectorOpen, setWalletSelectorOpen] = useState(false);
   const [detectedWallets, setDetectedWallets] = useState(getInjectedWallets);
@@ -414,6 +470,7 @@ function App() {
   });
   const [vaultId, setVaultId] = useState("");
   const [vaultInfo, setVaultInfo] = useState(null);
+  const [countdownNow, setCountdownNow] = useState(Date.now());
   const [myVaults, setMyVaults] = useState([]);
   const [isVaultListLoading, setIsVaultListLoading] = useState(false);
   const [vaultLoadError, setVaultLoadError] = useState("");
@@ -434,6 +491,7 @@ function App() {
   const parsedAmountValue = Number(amountValue);
   const parsedWalletBalance = Number(walletBalance);
   const hasKnownWalletBalance = Boolean(walletBalance) && Number.isFinite(parsedWalletBalance);
+  const hasLowWalletBalance = Boolean(account) && !isBalanceLoading && hasKnownWalletBalance && parsedWalletBalance < 0.01;
   const amountSliderValue = hasKnownWalletBalance && parsedWalletBalance > 0 && Number.isFinite(parsedAmountValue)
     ? Math.min(100, Math.max(0, Math.round((parsedAmountValue / parsedWalletBalance) * 100)))
     : 0;
@@ -527,6 +585,15 @@ function App() {
       document.removeEventListener("keydown", handleEscape);
     };
   }, [walletDropdownOpen]);
+
+  useEffect(() => {
+    setCountdownNow(Date.now());
+    if (!vaultInfo) return undefined;
+    const intervalId = window.setInterval(() => {
+      setCountdownNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [vaultId, vaultInfo?.start, vaultInfo?.duration]);
 
   useEffect(() => {
     const selectedVaultId = vaultId.trim();
@@ -772,6 +839,229 @@ function App() {
     }
   }
 
+  async function copyProofSummary() {
+    if (!proofReceipt) return;
+    await copyText(buildProofSummary(proofReceipt), "Proof summary copied.");
+  }
+
+  async function shareProof() {
+    if (!proofReceipt) return;
+    const proofSummary = buildProofSummary(proofReceipt);
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "VestFlow Proof Receipt",
+          text: proofSummary,
+          url: DAPP_URL
+        });
+        notify("Proof shared.", "", "success");
+        return;
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+      }
+    }
+    await copyText(proofSummary, "Proof summary copied.");
+  }
+
+  function shareProofToX() {
+    if (!proofReceipt) return;
+    const tweetText = buildProofSummary(proofReceipt);
+    window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}`, "_blank", "noopener,noreferrer");
+  }
+
+  function drawRoundedRect(context, x, y, width, height, radius) {
+    context.beginPath();
+    context.moveTo(x + radius, y);
+    context.lineTo(x + width - radius, y);
+    context.quadraticCurveTo(x + width, y, x + width, y + radius);
+    context.lineTo(x + width, y + height - radius);
+    context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    context.lineTo(x + radius, y + height);
+    context.quadraticCurveTo(x, y + height, x, y + height - radius);
+    context.lineTo(x, y + radius);
+    context.quadraticCurveTo(x, y, x + radius, y);
+    context.closePath();
+  }
+
+  function drawReceiptRow(context, label, value, y) {
+    context.fillStyle = "rgba(248, 245, 255, 0.62)";
+    context.font = "700 24px Arial";
+    context.fillText(label.toUpperCase(), 140, y);
+    context.fillStyle = "#fff7e8";
+    context.font = "800 30px Arial";
+    context.fillText(value, 420, y);
+  }
+
+  function downloadReceiptPng() {
+    if (!proofReceipt) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = 1200;
+    canvas.height = 800;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    const writeText = (text, x, y, size = 32, color = "#f8f5ff", weight = 900, maxWidth = 620) => {
+      context.save();
+      context.shadowColor = "rgba(0, 0, 0, 0.68)";
+      context.shadowBlur = 16;
+      context.fillStyle = color;
+      context.font = `${weight} ${size}px Arial`;
+      let nextSize = size;
+      while (context.measureText(text).width > maxWidth && nextSize > 18) {
+        nextSize -= 2;
+        context.font = `${weight} ${nextSize}px Arial`;
+      }
+      context.fillText(text, x, y);
+      context.restore();
+    };
+
+    const background = context.createLinearGradient(0, 0, 1200, 800);
+    background.addColorStop(0, "#07101f");
+    background.addColorStop(0.45, "#120b25");
+    background.addColorStop(1, "#061d2b");
+    context.fillStyle = background;
+    context.fillRect(0, 0, 1200, 800);
+
+    context.strokeStyle = "rgba(255, 255, 255, 0.035)";
+    context.lineWidth = 1;
+    for (let x = 0; x <= 1200; x += 42) {
+      context.beginPath();
+      context.moveTo(x, 0);
+      context.lineTo(x, 800);
+      context.stroke();
+    }
+    for (let y = 0; y <= 800; y += 42) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.lineTo(1200, y);
+      context.stroke();
+    }
+
+    const purpleGlow = context.createRadialGradient(210, 120, 20, 210, 120, 340);
+    purpleGlow.addColorStop(0, "rgba(168, 85, 247, 0.38)");
+    purpleGlow.addColorStop(1, "rgba(168, 85, 247, 0)");
+    context.fillStyle = purpleGlow;
+    context.fillRect(0, 0, 560, 460);
+
+    const blueGlow = context.createRadialGradient(925, 260, 20, 925, 260, 360);
+    blueGlow.addColorStop(0, "rgba(56, 189, 248, 0.34)");
+    blueGlow.addColorStop(1, "rgba(56, 189, 248, 0)");
+    context.fillStyle = blueGlow;
+    context.fillRect(560, 0, 640, 620);
+
+    context.save();
+    context.shadowColor = "rgba(0, 0, 0, 0.58)";
+    context.shadowBlur = 44;
+    context.shadowOffsetY = 26;
+    drawRoundedRect(context, 70, 58, 1060, 684, 36);
+    context.fillStyle = "rgba(11, 12, 28, 0.92)";
+    context.fill();
+    context.restore();
+
+    const edge = context.createLinearGradient(70, 58, 1130, 742);
+    edge.addColorStop(0, "rgba(168, 85, 247, 0.72)");
+    edge.addColorStop(0.5, "rgba(56, 189, 248, 0.62)");
+    edge.addColorStop(1, "rgba(168, 85, 247, 0.34)");
+    context.strokeStyle = edge;
+    context.lineWidth = 3;
+    drawRoundedRect(context, 70, 58, 1060, 684, 36);
+    context.stroke();
+
+    context.strokeStyle = "rgba(255, 255, 255, 0.12)";
+    context.lineWidth = 1;
+    drawRoundedRect(context, 96, 86, 1008, 628, 28);
+    context.stroke();
+
+    const rows = [
+      ["Recipient", shortAddress(proofReceipt.recipient)],
+      ["Amount", `${proofReceipt.amount} OPN`],
+      ["Lockup", proofReceipt.lockupStyle],
+      ["Release", formatReceiptDate(proofReceipt.releaseDate)],
+      ["Contract", shortAddress(VESTFLOW_ADDRESS)]
+    ];
+
+    context.fillStyle = "rgba(56, 189, 248, 0.13)";
+    drawRoundedRect(context, 130, 124, 190, 42, 21);
+    context.fill();
+    context.strokeStyle = "rgba(143, 215, 232, 0.5)";
+    context.stroke();
+    writeText("PROOF RECEIPT", 148, 153, 20, "#8fd7e8", 950, 170);
+    writeText(`Vault #${proofReceipt.vaultId}`, 130, 238, 66, "#fff7e8", 950, 600);
+    writeText("created on OPN Testnet", 132, 286, 26, "#8fd7e8", 800, 420);
+
+    context.save();
+    context.shadowColor = "rgba(168, 85, 247, 0.24)";
+    context.shadowBlur = 28;
+    drawRoundedRect(context, 120, 326, 700, 296, 24);
+    context.fillStyle = "rgba(255, 255, 255, 0.06)";
+    context.fill();
+    context.strokeStyle = "rgba(255, 255, 255, 0.12)";
+    context.lineWidth = 1;
+    context.stroke();
+    context.restore();
+
+    rows.forEach(([label, value], index) => {
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+      const x = 148 + column * 332;
+      const y = 356 + row * 86;
+      const width = 300;
+      drawRoundedRect(context, x, y, width, 62, 14);
+      context.fillStyle = "rgba(8, 13, 28, 0.42)";
+      context.fill();
+      context.strokeStyle = "rgba(143, 215, 232, 0.16)";
+      context.lineWidth = 1;
+      context.stroke();
+      context.fillStyle = "rgba(56, 189, 248, 0.72)";
+      context.beginPath();
+      context.arc(x + 18, y + 31, 5, 0, Math.PI * 2);
+      context.fill();
+      writeText(label.toUpperCase(), x + 34, y + 25, 14, "rgba(248, 245, 255, 0.58)", 900, width - 46);
+      writeText(value, x + 34, y + 52, 22, "#fff7e8", 900, width - 46);
+    });
+
+    context.save();
+    context.translate(945, 374);
+    const orb = context.createRadialGradient(-30, -35, 8, 0, 0, 136);
+    orb.addColorStop(0, "rgba(255, 255, 255, 0.45)");
+    orb.addColorStop(0.36, "rgba(56, 189, 248, 0.32)");
+    orb.addColorStop(1, "rgba(124, 58, 237, 0.14)");
+    context.shadowColor = "rgba(56, 189, 248, 0.48)";
+    context.shadowBlur = 42;
+    context.fillStyle = orb;
+    context.beginPath();
+    context.arc(0, 0, 118, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = "rgba(143, 215, 232, 0.62)";
+    context.lineWidth = 4;
+    context.stroke();
+    context.shadowBlur = 0;
+    context.strokeStyle = "rgba(248, 245, 255, 0.82)";
+    context.lineWidth = 8;
+    drawRoundedRect(context, -46, -4, 92, 78, 18);
+    context.stroke();
+    context.beginPath();
+    context.arc(0, -8, 38, Math.PI, 0);
+    context.stroke();
+    context.restore();
+
+    context.fillStyle = "rgba(234, 216, 166, 0.92)";
+    context.font = "800 24px Arial";
+    context.fillText("VestFlow Protocol  OPN Testnet", 130, 675);
+
+    context.fillStyle = "rgba(143, 215, 232, 0.78)";
+    context.font = "800 18px Arial";
+    if (proofReceipt.txHash) {
+      context.fillText(`TX ${shortAddress(proofReceipt.txHash)}`, 820, 675);
+    }
+
+    const link = document.createElement("a");
+    link.download = `vestflow-vault-${proofReceipt.vaultId}-proof.png`;
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+    notify("Receipt downloaded.", "", "success");
+  }
+
   function openWalletExplorer() {
     if (!account) return;
     window.open(`https://testnet.iopn.tech/address/${account}`, "_blank", "noopener,noreferrer");
@@ -791,6 +1081,13 @@ function App() {
       window.dispatchEvent(new Event("eip6963:requestProvider"));
     }
     setWalletSelectorOpen(true);
+  }
+
+  function handleSidebarNavigation(pageId) {
+    setActivePage(pageId);
+    if (window.matchMedia("(max-width: 1120px)").matches) {
+      setSidebarCollapsed(true);
+    }
   }
 
   async function signOutWallet() {
@@ -1027,7 +1324,9 @@ function App() {
     if (!isAddress(selectedRecipient)) throw new Error("Invalid recipient address.");
     const parsedAmount = Number(selectedAmount);
     if (!selectedAmount || !/^\d*\.?\d+$/.test(selectedAmount) || !Number.isFinite(parsedAmount) || parsedAmount <= 0) throw new Error("Amount must be greater than 0.");
-    if (hasKnownWalletBalance && parsedAmount > parsedWalletBalance) throw new Error("Amount exceeds wallet balance.");
+    if (hasKnownWalletBalance && (parsedWalletBalance < 0.01 || parsedAmount > parsedWalletBalance)) {
+      throw new Error("Not enough OPN balance. Use the faucet to get testnet OPN.");
+    }
     return {
       lockSeconds: getLockSeconds(),
       recipient: selectedRecipient,
@@ -1133,8 +1432,20 @@ function App() {
 
   return (
     <>
-      <aside className="sidebar">
-        <button className="nav-brand brand-row" onClick={() => setActivePage("home")} aria-label="VestFlow home">
+      <aside className={sidebarCollapsed ? "sidebar is-collapsed" : "sidebar"}>
+        <div className="sidebar-top">
+        <button
+          className={sidebarCollapsed ? "nav-brand brand-row is-collapsed" : "nav-brand brand-row"}
+          onClick={() => {
+            if (sidebarCollapsed) {
+              setSidebarCollapsed(false);
+            } else {
+              handleSidebarNavigation("home");
+            }
+          }}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "VestFlow home"}
+          title={sidebarCollapsed ? "Expand sidebar" : "VestFlow home"}
+        >
           <span className="brand-logo">
             <img src="/iopn-logo.png" alt="VestFlow logo" />
           </span>
@@ -1143,12 +1454,28 @@ function App() {
             <small className="brand-subtitle">IOPn / OPN Testnet</small>
           </span>
         </button>
+        <button
+          className="sidebar-toggle"
+          type="button"
+          onClick={() => setSidebarCollapsed((isCollapsed) => !isCollapsed)}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {sidebarCollapsed ? <ChevronRight aria-hidden="true" size={18} /> : <ChevronLeft aria-hidden="true" size={18} />}
+        </button>
+        </div>
         <div className="menu-label">MAIN</div>
         <nav className="nav-links" aria-label="Page sections">
           {navItems.map(({ label, id, Icon }) => (
-            <button key={id} className={activePage === id ? "nav-item active" : "nav-item"} onClick={() => setActivePage(id)}>
+            <button
+              key={id}
+              className={activePage === id ? "nav-item active" : "nav-item"}
+              onClick={() => handleSidebarNavigation(id)}
+              aria-label={label}
+              title={sidebarCollapsed ? label : undefined}
+            >
               <Icon aria-hidden="true" size={17} strokeWidth={2.35} />
-              <span>{label}</span>
+              <span className="nav-label">{label}</span>
               <span className="active-dot" aria-hidden="true" />
             </button>
           ))}
@@ -1185,15 +1512,27 @@ function App() {
               <span className="dropdown-label">LINKED WALLET</span>
               <div className="dropdown-address">
                 <Wallet aria-hidden="true" size={18} />
-                <code>{selectedWalletName ? `${selectedWalletName}: ${account}` : account}</code>
+                <strong>Wallet connected</strong>
               </div>
               <div className="dropdown-balance">
                 <img src={OPN_BALANCE_LOGO} alt="" />
                 <div>
                   <span>OPN Balance</span>
-                  <strong>{isBalanceLoading ? "..." : `${walletBalance || "--"} OPN`}</strong>
+                  <strong>{isBalanceLoading ? "..." : `${formatWalletBalance(walletBalance)} OPN`}</strong>
                 </div>
               </div>
+              {hasLowWalletBalance && (
+                <div className="wallet-faucet-row">
+                  <div>
+                    <strong>Need testnet OPN?</strong>
+                    <span>You need OPN Testnet coins to create vaults and pay gas fees.</span>
+                  </div>
+                  <div className="faucet-actions">
+                    <a href={OPN_FAUCET_URL} target="_blank" rel="noreferrer">Open OPN Faucet</a>
+                    <button type="button" onClick={() => copyText(account, "Wallet address copied.")}>Copy Wallet Address</button>
+                  </div>
+                </div>
+              )}
               <button onClick={copyAddress} role="menuitem"><Copy aria-hidden="true" size={17} />Copy address</button>
               <button onClick={openWalletExplorer} role="menuitem"><ExternalLink aria-hidden="true" size={17} />View on explorer</button>
               <button onClick={openPublicProfile} role="menuitem"><Info aria-hidden="true" size={17} />Public profile</button>
@@ -1252,7 +1591,7 @@ function App() {
         ))}
       </div>
 
-      <main className="page">
+      <main className={sidebarCollapsed ? "page sidebar-collapsed" : "page"}>
         <div key={activePage} className="page-transition">
         {activePage === "home" && (
           <>
@@ -1405,6 +1744,18 @@ function App() {
                       <label>Amount</label>
                       <span className="balance-label">Balance: {isBalanceLoading ? "..." : `${formatWalletBalance(walletBalance)} OPN`}</span>
                     </div>
+                    {hasLowWalletBalance && (
+                      <div className="lock-faucet-cta">
+                        <div>
+                          <strong>Need testnet OPN?</strong>
+                          <span>You need OPN Testnet coins to create vaults and pay gas fees.</span>
+                        </div>
+                        <div className="faucet-actions">
+                          <a href={OPN_FAUCET_URL} target="_blank" rel="noreferrer">Open OPN Faucet</a>
+                          <button type="button" onClick={() => copyText(account, "Wallet address copied.")}>Copy Wallet Address</button>
+                        </div>
+                      </div>
+                    )}
                     <input
                       inputMode="decimal"
                       min="0"
@@ -1506,6 +1857,48 @@ function App() {
         </section>
 
         {proofReceipt && (
+          <section className="share-proof-section reveal reveal-up" data-reveal>
+            <div className="share-proof-3d-wrap">
+              <div className="share-proof-card">
+                <div className="share-proof-glow" aria-hidden="true" />
+                <div className="share-proof-content">
+                  <div className="share-proof-header">
+                    <span className="share-proof-badge">
+                      <ShieldCheck size={14} strokeWidth={2.4} aria-hidden="true" />
+                      PROOF RECEIPT
+                    </span>
+                    <div>
+                      <h2 className="share-proof-title">Vault #{proofReceipt.vaultId}</h2>
+                      <p className="share-proof-subtitle">created on OPN Testnet</p>
+                    </div>
+                  </div>
+                  <div className="share-proof-body">
+                    <div className="share-proof-details">
+                      <div className="share-proof-row"><span className="share-proof-row-icon" aria-hidden="true" /><span>Recipient</span><strong>{shortAddress(proofReceipt.recipient)}</strong></div>
+                      <div className="share-proof-row"><span className="share-proof-row-icon" aria-hidden="true" /><span>Amount</span><strong>{proofReceipt.amount} OPN</strong></div>
+                      <div className="share-proof-row"><span className="share-proof-row-icon" aria-hidden="true" /><span>Lockup</span><strong>{proofReceipt.lockupStyle}</strong></div>
+                      <div className="share-proof-row"><span className="share-proof-row-icon" aria-hidden="true" /><span>Release</span><strong>{formatReceiptDate(proofReceipt.releaseDate)}</strong></div>
+                      <div className="share-proof-row"><span className="share-proof-row-icon" aria-hidden="true" /><span>Contract</span><strong>{shortAddress(VESTFLOW_ADDRESS)}</strong></div>
+                    </div>
+                    <div className="share-proof-lock-visual" aria-hidden="true">
+                      <span className="share-proof-orb">
+                        <LockKeyhole size={76} strokeWidth={1.6} />
+                      </span>
+                    </div>
+                  </div>
+                  <div className="share-proof-footer">VestFlow Protocol <span>OPN Testnet</span></div>
+                </div>
+              </div>
+            </div>
+            <div className="share-proof-actions">
+              <button type="button" className="share-x-action" onClick={shareProofToX}>Share to X</button>
+              <button type="button" className="download-receipt-action" onClick={downloadReceiptPng}>Download Receipt</button>
+              <button type="button" className="copy-proof-action" onClick={copyProofSummary}>Copy Proof Summary</button>
+            </div>
+          </section>
+        )}
+
+        {proofReceipt && (
           <section className="proof-receipt reveal reveal-up" data-reveal>
             <div>
               <p className="section-kicker">Proof Receipt</p>
@@ -1519,13 +1912,12 @@ function App() {
               <div><span>Release date</span><strong>{proofReceipt.releaseDate}</strong></div>
               <div><span>Transaction hash</span><code>{shortAddress(proofReceipt.txHash)}</code></div>
             </div>
-            <div className="actions compact">
+            <div className="receipt-actions">
               <button onClick={() => {
                 setVaultId(proofReceipt.vaultId);
                 setActivePage("track");
               }}>Track this Vault</button>
               <a href={`https://testnet.iopn.tech/tx/${proofReceipt.txHash}`} target="_blank" rel="noreferrer">View transaction on OPN Explorer</a>
-              <button onClick={() => copyText(`VestFlow Proof Receipt\nVault ID: ${proofReceipt.vaultId}\nRecipient: ${proofReceipt.recipient}\nAmount: ${proofReceipt.amount} OPN\nLockup style: ${proofReceipt.lockupStyle}\nRelease date: ${proofReceipt.releaseDate}\nTransaction: https://testnet.iopn.tech/tx/${proofReceipt.txHash}`, "Proof summary copied.")}>Copy Proof Summary</button>
             </div>
           </section>
         )}
@@ -1606,16 +1998,12 @@ function App() {
               <div className="vault-details-panel reveal reveal-right" data-reveal>
                 <div className="card-heading">
                   <h3>Vault Status</h3>
-                  <p>Compact status and vesting summary for the selected vault.</p>
+                  <p>Claimable amount and status for the selected vault.</p>
                 </div>
                 {isVaultLoading ? (
                   <div className="empty-state">Loading vault data...</div>
                 ) : vaultInfo ? (
-                  <TrackVaultDetails
-                    vault={vaultInfo}
-                    vaultId={vaultId}
-                    onCopyRecipient={() => copyText(vaultInfo.recipient, "Recipient copied.")}
-                  />
+                  <TrackVaultDetails vault={vaultInfo} now={countdownNow} />
                 ) : (
                   <div className="empty-state">Select a vault or enter a Vault ID.</div>
                 )}

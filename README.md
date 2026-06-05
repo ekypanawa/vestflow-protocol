@@ -20,6 +20,7 @@ VestFlow uses an OPN Testnet smart contract to hold native OPN and enforce relea
 - Chain ID: `984`
 - RPC: `https://testnet-rpc.iopn.tech`
 - Explorer: `https://testnet.iopn.tech`
+- OPN Testnet Faucet: `https://faucet.iopn.tech`
 - Contract: `0x5E0d0146804E6c34f748CED382C5ee179aFb3A5E`
 - Deploy TX: `0x7638dc202f14c797b3441aa50375fab6e07ba5ea2cffb2da08c3e2111c796f59`
 - Deployer: `0xd564ab77aDE8D2a4f3199d71f4Aa9F487976d63C`

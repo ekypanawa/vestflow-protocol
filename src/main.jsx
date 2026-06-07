@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { ethers, Contract, JsonRpcProvider, formatEther, isAddress, parseEther } from "ethers";
 import {
   Activity,
+  BadgeCheck,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -13,13 +14,18 @@ import {
   Globe,
   Home,
   Info,
+  Droplets,
+  Hash,
   LockKeyhole,
   LogOut,
   Map,
   Moon,
+  Menu,
   SearchCheck,
   ShieldCheck,
+  Share2,
   Sun,
+  Network,
   Wallet,
   Workflow
 } from "lucide-react";
@@ -70,7 +76,6 @@ const navItems = [
   { label: "Home", id: "home", Icon: Home },
   { label: "Lock", id: "lock", Icon: LockKeyhole },
   { label: "Track & Claim", id: "track", Icon: SearchCheck },
-  { label: "Proof", id: "proof", Icon: ShieldCheck },
   { label: "Guide", id: "guide", Icon: Workflow },
   { label: "Roadmap", id: "roadmap", Icon: Map },
   { label: "About", id: "about", Icon: Info }
@@ -128,6 +133,33 @@ function buildProofSummary(receipt) {
     "#IOPn #OPNChain #BuildOnChain"
   ];
   return lines.join("\n");
+}
+
+function getHiddenClaimedVaultsKey(account) {
+  return `vestflowHiddenClaimedVaults:${String(account || "").toLowerCase()}`;
+}
+
+function readHiddenClaimedVaults(account) {
+  if (typeof window === "undefined" || !account) return new Set();
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(getHiddenClaimedVaultsKey(account)) || "[]");
+    return new Set(Array.isArray(stored) ? stored.map((value) => String(value)) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistHiddenClaimedVaults(account, vaultIds) {
+  if (typeof window === "undefined" || !account) return;
+  const values = Array.from(vaultIds || []).map((value) => String(value));
+  window.localStorage.setItem(getHiddenClaimedVaultsKey(account), JSON.stringify(values));
+}
+
+function isVaultFullyClaimed(vault) {
+  if (!vault) return false;
+  const amount = BigInt(vault.amountRaw || 0);
+  const claimed = BigInt(vault.claimedRaw || 0);
+  return amount > 0n && claimed >= amount;
 }
 
 function normalizeDecimalInput(value) {
@@ -473,16 +505,22 @@ function App() {
   const [vaultInfo, setVaultInfo] = useState(null);
   const [countdownNow, setCountdownNow] = useState(Date.now());
   const [myVaults, setMyVaults] = useState([]);
+  const [showClaimedVaults, setShowClaimedVaults] = useState(false);
+  const [hiddenClaimedVaultIds, setHiddenClaimedVaultIds] = useState(new Set());
   const [isVaultListLoading, setIsVaultListLoading] = useState(false);
   const [vaultLoadError, setVaultLoadError] = useState("");
   const [showVaultLoadSlowHint, setShowVaultLoadSlowHint] = useState(false);
   const [isVaultLoading, setIsVaultLoading] = useState(false);
+  const [isAmountSliding, setIsAmountSliding] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [nextVaultId, setNextVaultId] = useState("...");
   const [lastRefreshed, setLastRefreshed] = useState("");
   const [proofReceipt, setProofReceipt] = useState(null);
   const walletMenuRef = useRef(null);
+  const mobileMoreMenuRef = useRef(null);
   const releaseDateInputRef = useRef(null);
   const proofSuccessRef = useRef(null);
+  const roadmapTimelineRef = useRef(null);
 
   const contractReady = useMemo(() => Boolean(VESTFLOW_ADDRESS), []);
   const contractStatus = account ? "Connected" : "Not Connected";
@@ -501,6 +539,15 @@ function App() {
     () => Boolean(selectedWalletProvider?.request || window.ethereum?.request || detectedWallets.some((wallet) => getWalletProvider(wallet)?.request)),
     [detectedWallets, selectedWalletProvider]
   );
+  const visibleMyVaults = useMemo(() => {
+    if (showClaimedVaults) return myVaults;
+    return myVaults.filter((vault) => !isVaultFullyClaimed(vault) && !hiddenClaimedVaultIds.has(vault.id));
+  }, [hiddenClaimedVaultIds, myVaults, showClaimedVaults]);
+  const activeMyVaultCount = useMemo(() => myVaults.filter((vault) => !isVaultFullyClaimed(vault)).length, [myVaults]);
+  const claimedMyVaultCount = Math.max(0, myVaults.length - activeMyVaultCount);
+  const myVaultsShownLabel = showClaimedVaults
+    ? `${visibleMyVaults.length} vault${visibleMyVaults.length === 1 ? "" : "s"} shown`
+    : `${visibleMyVaults.length} active vault${visibleMyVaults.length === 1 ? "" : "s"}${claimedMyVaultCount ? ` · ${claimedMyVaultCount} claimed hidden` : ""}`;
 
   const refreshWalletBalance = useCallback(async (targetAccount = account, providerOverride = null) => {
     if (!targetAccount) {
@@ -583,6 +630,30 @@ function App() {
   }, [walletDropdownOpen]);
 
   useEffect(() => {
+    if (!mobileMoreOpen) return;
+
+    const handleClickOutside = (event) => {
+      if (mobileMoreMenuRef.current && !mobileMoreMenuRef.current.contains(event.target)) {
+        setMobileMoreOpen(false);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") setMobileMoreOpen(false);
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("touchstart", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [mobileMoreOpen]);
+
+  useEffect(() => {
     setCountdownNow(Date.now());
     const releaseTimestamp = getVaultReleaseTimestamp(vaultInfo);
     if (!releaseTimestamp || releaseTimestamp <= Date.now()) return undefined;
@@ -613,6 +684,16 @@ function App() {
     } else {
       setMyVaults([]);
     }
+  }, [account]);
+
+  useEffect(() => {
+    if (!account) {
+      setHiddenClaimedVaultIds(new Set());
+      setShowClaimedVaults(false);
+      return;
+    }
+    setHiddenClaimedVaultIds(readHiddenClaimedVaults(account));
+    setShowClaimedVaults(false);
   }, [account]);
 
   useEffect(() => {
@@ -647,6 +728,91 @@ function App() {
     revealTargets.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
   }, [activePage, activityExpanded, proofReceipt]);
+
+  useEffect(() => {
+    if (activePage !== "roadmap" || typeof window === "undefined") return;
+
+    const timeline = roadmapTimelineRef.current;
+    if (!timeline) return;
+
+    const roadmapItems = Array.from(timeline.querySelectorAll(".roadmap-item"));
+    let animationFrameId = 0;
+    const updateProgress = () => {
+      animationFrameId = 0;
+      const rect = timeline.getBoundingClientRect();
+      const viewportHeight = window.innerHeight;
+      const start = viewportHeight * 0.75;
+      const end = viewportHeight - rect.height;
+      const progress = Math.min(1, Math.max(0, (start - rect.top) / Math.max(start - end, 1)));
+      const roadmapNodes = roadmapItems
+        .map((item) => item.querySelector(".roadmap-node"))
+        .filter(Boolean);
+      const firstNode = roadmapNodes[0];
+      const lastNode = roadmapNodes[roadmapNodes.length - 1];
+
+      if (firstNode && lastNode) {
+        const firstRect = firstNode.getBoundingClientRect();
+        const lastRect = lastNode.getBoundingClientRect();
+        const lineTop = firstRect.top - rect.top + firstRect.height / 2;
+        const lineBottom = lastRect.top - rect.top + lastRect.height / 2;
+        const lineHeight = Math.max(1, lineBottom - lineTop);
+
+        timeline.style.setProperty("--roadmap-line-top", `${lineTop}px`);
+        timeline.style.setProperty("--roadmap-line-height", `${lineHeight}px`);
+        timeline.style.setProperty("--roadmap-progress", `${progress}`);
+
+        roadmapItems.forEach((item) => {
+          const node = item.querySelector(".roadmap-node");
+          if (!node) return;
+          const nodeRect = node.getBoundingClientRect();
+          const nodeCenter = nodeRect.top - rect.top + nodeRect.height / 2;
+          const threshold = Math.min(1, Math.max(0, (nodeCenter - lineTop) / lineHeight));
+          item.classList.toggle("is-reached", progress >= threshold);
+        });
+      }
+    };
+
+    const requestProgressUpdate = () => {
+      if (!animationFrameId) animationFrameId = window.requestAnimationFrame(updateProgress);
+    };
+
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (prefersReducedMotion) {
+      const roadmapNodes = roadmapItems
+        .map((item) => item.querySelector(".roadmap-node"))
+        .filter(Boolean);
+      const firstNode = roadmapNodes[0];
+      const lastNode = roadmapNodes[roadmapNodes.length - 1];
+      if (firstNode && lastNode) {
+        const timelineRect = timeline.getBoundingClientRect();
+        const firstRect = firstNode.getBoundingClientRect();
+        const lastRect = lastNode.getBoundingClientRect();
+        const lineTop = firstRect.top - timelineRect.top + firstRect.height / 2;
+        const lineBottom = lastRect.top - timelineRect.top + lastRect.height / 2;
+        timeline.style.setProperty("--roadmap-line-top", `${lineTop}px`);
+        timeline.style.setProperty("--roadmap-line-height", `${Math.max(1, lineBottom - lineTop)}px`);
+      }
+      timeline.style.setProperty("--roadmap-progress", "1");
+      roadmapItems.forEach((item) => item.classList.add("is-reached"));
+      return undefined;
+    }
+
+    window.addEventListener("scroll", requestProgressUpdate, { passive: true });
+    window.addEventListener("resize", requestProgressUpdate);
+    requestProgressUpdate();
+
+    return () => {
+      window.removeEventListener("scroll", requestProgressUpdate);
+      window.removeEventListener("resize", requestProgressUpdate);
+      if (animationFrameId) window.cancelAnimationFrame(animationFrameId);
+    };
+  }, [activePage]);
+
+  useEffect(() => {
+    if (activePage === "proof") {
+      setActivePage("guide");
+    }
+  }, [activePage]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -889,7 +1055,7 @@ function App() {
     context.fillText(value, 420, y);
   }
 
-  function downloadReceiptPng() {
+  async function downloadReceiptPng() {
     if (!proofReceipt) return;
     const canvas = document.createElement("canvas");
     canvas.width = 1200;
@@ -969,6 +1135,76 @@ function App() {
     drawRoundedRect(context, 96, 86, 1008, 628, 28);
     context.stroke();
 
+    const drawCircuitTrace = (points, color = "rgba(56, 189, 248, 0.34)") => {
+      context.save();
+      context.strokeStyle = color;
+      context.lineWidth = 2;
+      context.shadowColor = color;
+      context.shadowBlur = 8;
+      context.beginPath();
+      points.forEach(([x, y], index) => {
+        if (index === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      });
+      context.stroke();
+      context.shadowBlur = 12;
+      [points[0], points[points.length - 1]].forEach(([x, y]) => {
+        context.fillStyle = "#0b1327";
+        context.beginPath();
+        context.arc(x, y, 6, 0, Math.PI * 2);
+        context.fill();
+        context.strokeStyle = color;
+        context.stroke();
+      });
+      context.restore();
+    };
+
+    context.save();
+    drawRoundedRect(context, 72, 60, 1056, 680, 34);
+    context.clip();
+    context.strokeStyle = "rgba(255, 255, 255, 0.022)";
+    context.lineWidth = 1;
+    for (let row = 118; row <= 686; row += 34) {
+      context.beginPath();
+      context.moveTo(128, row);
+      context.lineTo(1040, row);
+      context.stroke();
+    }
+    context.strokeStyle = "rgba(56, 189, 248, 0.028)";
+    for (let col = 148; col <= 1032; col += 36) {
+      context.beginPath();
+      context.moveTo(col, 102);
+      context.lineTo(col, 706);
+      context.stroke();
+    }
+    context.fillStyle = "rgba(56, 189, 248, 0.035)";
+    context.fillRect(770, 110, 270, 500);
+    drawCircuitTrace([[82, 232], [176, 232], [218, 274], [350, 274]], "rgba(168, 85, 247, 0.34)");
+    drawCircuitTrace([[76, 596], [196, 596], [238, 554], [344, 554]], "rgba(56, 189, 248, 0.32)");
+    drawCircuitTrace([[1120, 196], [1042, 196], [998, 240], [894, 240]], "rgba(56, 189, 248, 0.38)");
+    drawCircuitTrace([[1130, 580], [1048, 580], [1000, 532], [900, 532]], "rgba(168, 85, 247, 0.32)");
+    context.restore();
+
+    try {
+      const opnLogo = new Image();
+      opnLogo.src = OPN_BALANCE_LOGO;
+      await opnLogo.decode();
+      context.save();
+      context.shadowColor = "rgba(56, 189, 248, 0.36)";
+      context.shadowBlur = 24;
+      drawRoundedRect(context, 930, 112, 128, 128, 26);
+      context.fillStyle = "rgba(8, 18, 34, 0.82)";
+      context.fill();
+      context.strokeStyle = "rgba(143, 215, 232, 0.38)";
+      context.lineWidth = 2;
+      context.stroke();
+      context.shadowBlur = 0;
+      context.drawImage(opnLogo, 946, 128, 96, 96);
+      context.restore();
+    } catch {
+      // Receipt export remains available if the decorative logo cannot be decoded.
+    }
+
     const rows = [
       ["Recipient", shortAddress(proofReceipt.recipient)],
       ["Amount", `${proofReceipt.amount} OPN`],
@@ -1018,27 +1254,69 @@ function App() {
     });
 
     context.save();
-    context.translate(945, 374);
-    const orb = context.createRadialGradient(-30, -35, 8, 0, 0, 136);
-    orb.addColorStop(0, "rgba(255, 255, 255, 0.45)");
-    orb.addColorStop(0.36, "rgba(56, 189, 248, 0.32)");
-    orb.addColorStop(1, "rgba(124, 58, 237, 0.14)");
-    context.shadowColor = "rgba(56, 189, 248, 0.48)";
-    context.shadowBlur = 42;
-    context.fillStyle = orb;
-    context.beginPath();
-    context.arc(0, 0, 118, 0, Math.PI * 2);
+    context.translate(946, 378);
+    const chipGlow = context.createRadialGradient(-24, -20, 8, 0, 0, 150);
+    chipGlow.addColorStop(0, "rgba(255, 255, 255, 0.28)");
+    chipGlow.addColorStop(0.45, "rgba(56, 189, 248, 0.22)");
+    chipGlow.addColorStop(1, "rgba(124, 58, 237, 0.08)");
+    context.shadowColor = "rgba(56, 189, 248, 0.36)";
+    context.shadowBlur = 32;
+    context.fillStyle = chipGlow;
+    drawRoundedRect(context, -110, -110, 220, 220, 32);
     context.fill();
-    context.strokeStyle = "rgba(143, 215, 232, 0.62)";
-    context.lineWidth = 4;
-    context.stroke();
     context.shadowBlur = 0;
-    context.strokeStyle = "rgba(248, 245, 255, 0.82)";
-    context.lineWidth = 8;
-    drawRoundedRect(context, -46, -4, 92, 78, 18);
+    context.strokeStyle = "rgba(143, 215, 232, 0.52)";
+    context.lineWidth = 3;
+    drawRoundedRect(context, -110, -110, 220, 220, 32);
     context.stroke();
+    context.setLineDash([7, 7]);
+    context.strokeStyle = "rgba(168, 85, 247, 0.34)";
+    context.lineWidth = 2;
+    drawRoundedRect(context, -92, -92, 184, 184, 24);
+    context.stroke();
+    context.setLineDash([]);
+    context.strokeStyle = "rgba(248, 245, 255, 0.14)";
+    context.lineWidth = 1;
+    for (let pin = -78; pin <= 78; pin += 26) {
+      context.beginPath();
+      context.moveTo(pin, -110);
+      context.lineTo(pin, -126);
+      context.moveTo(pin, 110);
+      context.lineTo(pin, 126);
+      context.moveTo(-110, pin);
+      context.lineTo(-126, pin);
+      context.moveTo(110, pin);
+      context.lineTo(126, pin);
+      context.stroke();
+    }
+    context.fillStyle = "rgba(8, 14, 28, 0.78)";
+    drawRoundedRect(context, -58, -48, 116, 96, 18);
+    context.fill();
+    context.strokeStyle = "rgba(56, 189, 248, 0.46)";
+    context.lineWidth = 2;
+    drawRoundedRect(context, -58, -48, 116, 96, 18);
+    context.stroke();
+    context.strokeStyle = "rgba(143, 215, 232, 0.2)";
+    context.lineWidth = 1;
+    for (let y = -28; y <= 28; y += 14) {
+      context.beginPath();
+      context.moveTo(-44, y);
+      context.lineTo(44, y);
+      context.stroke();
+    }
+    for (let x = -34; x <= 34; x += 17) {
+      context.beginPath();
+      context.moveTo(x, -36);
+      context.lineTo(x, 36);
+      context.stroke();
+    }
+    context.strokeStyle = "rgba(255, 255, 255, 0.8)";
+    context.lineWidth = 2.5;
     context.beginPath();
-    context.arc(0, -8, 38, Math.PI, 0);
+    context.moveTo(-22, -4);
+    context.lineTo(22, -4);
+    context.moveTo(-22, 10);
+    context.lineTo(16, 10);
     context.stroke();
     context.restore();
 
@@ -1078,6 +1356,11 @@ function App() {
       window.dispatchEvent(new Event("eip6963:requestProvider"));
     }
     setWalletSelectorOpen(true);
+  }
+
+  function handleMobileNavigation(pageId) {
+    handleSidebarNavigation(pageId);
+    setMobileMoreOpen(false);
   }
 
   function handleSidebarNavigation(pageId) {
@@ -1202,22 +1485,77 @@ function App() {
       setNextVaultId(nextId.toString());
       const totalVaults = Number(nextId);
       const accountLower = account.toLowerCase();
-      const vaults = [];
+      let candidateIds = [];
+      let scanAllVaults = false;
 
-      for (let index = 0; index < totalVaults; index += 1) {
-        try {
-          const { info } = await readVaultInfo(contract, String(index));
-          const isRecipient = info.recipient?.toLowerCase() === accountLower;
-          const isCreator = info.creator?.toLowerCase() === accountLower;
-          if (isRecipient || isCreator) {
-            vaults.push({ id: String(index), ...info });
+      try {
+        const [createdVaultIds, recipientVaultIds] = await Promise.all([
+          contract.getCreatedVaults(account),
+          contract.getRecipientVaults(account)
+        ]);
+        candidateIds = Array.from(
+          new Set([
+            ...createdVaultIds.map((id) => String(id)),
+            ...recipientVaultIds.map((id) => String(id))
+          ])
+        );
+      } catch {
+        scanAllVaults = true;
+        candidateIds = Array.from({ length: totalVaults }, (_, index) => String(index));
+      }
+
+      candidateIds.sort((left, right) => Number(left) - Number(right));
+      const batchSize = 12;
+      const vaults = [];
+      const nextHiddenClaimedVaultIds = new Set(readHiddenClaimedVaults(account));
+
+      for (let start = 0; start < candidateIds.length; start += batchSize) {
+        const batchIds = candidateIds.slice(start, start + batchSize);
+        const batchVaults = await Promise.all(
+          batchIds.map(async (id) => {
+            try {
+              const data = await contract.vaults(id);
+              return { id, data };
+            } catch {
+              return null;
+            }
+          })
+        );
+
+        const relevantVaults = scanAllVaults
+          ? batchVaults.filter(Boolean).filter(({ data }) => {
+            const recipient = data.recipient?.toLowerCase();
+            const creator = data.creator?.toLowerCase();
+            return recipient === accountLower || creator === accountLower;
+          })
+          : batchVaults.filter(Boolean);
+
+        const detailedVaults = await Promise.all(
+          relevantVaults.map(async ({ id, data }) => {
+            try {
+              const [claimable, vested] = await Promise.all([
+                contract.claimableAmount(id),
+                contract.vestedAmount(id)
+              ]);
+              const info = mapVaultInfo(data, claimable, vested);
+              return { id, ...info };
+            } catch {
+              return null;
+            }
+          })
+        );
+
+        detailedVaults.filter(Boolean).forEach((vault) => {
+          vaults.push(vault);
+          if (isVaultFullyClaimed(vault)) {
+            nextHiddenClaimedVaultIds.add(vault.id);
           }
-        } catch {
-          // Skip vault IDs that cannot be read without mutating UI state.
-        }
+        });
       }
 
       setMyVaults(vaults);
+      setHiddenClaimedVaultIds(nextHiddenClaimedVaultIds);
+      persistHiddenClaimedVaults(account, nextHiddenClaimedVaultIds);
       if (vaultId.trim() && /^\d+$/.test(vaultId.trim())) {
         await loadSelectedVaultData(vaultId.trim());
       }
@@ -1444,12 +1782,20 @@ function App() {
       if (receipt?.status !== 1) {
         throw new Error("Claim transaction failed.");
       }
-      notify("Claim successful.", `Tx: ${shortAddress(tx.hash)}`, "success");
       addActivity("Claim Executed", `Vault ${selectedVaultId} claimed successfully.`, tx.hash);
       await refreshWalletBalance(account);
-      await loadSelectedVaultData(selectedVaultId);
+      const refreshedVault = await loadSelectedVaultData(selectedVaultId);
       await loadMyVaults(false);
       await loadLiveContractData(false);
+      if (isVaultFullyClaimed(refreshedVault)) {
+        const nextHiddenVaultIds = new Set(readHiddenClaimedVaults(account));
+        nextHiddenVaultIds.add(String(selectedVaultId));
+        setHiddenClaimedVaultIds(nextHiddenVaultIds);
+        persistHiddenClaimedVaults(account, nextHiddenVaultIds);
+        notify("Vault claimed and archived from active list.", `Vault ID ${selectedVaultId}.`, "success");
+      } else {
+        notify("Claim successful.", `Tx: ${shortAddress(tx.hash)}`, "success");
+      }
     } catch (error) {
       reportError(new Error(normalizeWalletError(error)));
     } finally {
@@ -1457,8 +1803,117 @@ function App() {
     }
   }
 
+  const guideSteps = [
+    {
+      badge: "STEP 01",
+      title: "Connect your wallet",
+      description: "Connect your OKX, MetaMask, or supported EVM wallet on OPN Testnet. Your wallet is the main on-chain identity for creating and claiming vaults.",
+      Icon: Wallet
+    },
+    {
+      badge: "STEP 02",
+      title: "Get testnet OPN",
+      description: "If your balance is low, use the OPN Testnet faucet. You need testnet OPN to create vaults and pay gas fees.",
+      Icon: Droplets
+    },
+    {
+      badge: "STEP 03",
+      title: "Create a secure lock",
+      description: "Open Lock Assets, choose the amount, recipient, lockup style, release date, and purpose note. Then create your vault on-chain.",
+      Icon: LockKeyhole
+    },
+    {
+      badge: "STEP 04",
+      title: "Save your Vault ID",
+      description: "Every created vault has a Vault ID. Use it to track status, verify claimable amount, and share proof with contributors or communities.",
+      Icon: Hash
+    },
+    {
+      badge: "STEP 05",
+      title: "Track vesting status",
+      description: "Go to Track & Claim, select a vault, and review claimable OPN, vesting status, countdown, and contract data.",
+      Icon: SearchCheck
+    },
+    {
+      badge: "STEP 06",
+      title: "Claim when ready",
+      description: "When the vault becomes claimable, click Claim Vault. VestFlow reads on-chain data and updates the vault status after the transaction confirms.",
+      Icon: BadgeCheck
+    },
+    {
+      badge: "STEP 07",
+      title: "Share proof receipt",
+      description: "After creating a vault, use Share to X or Download Receipt to share a clean proof card with vault details.",
+      Icon: Share2
+    },
+    {
+      badge: "STEP 08",
+      title: "Use it for builder flows",
+      description: "VestFlow can support contributor rewards, grant distribution, DAO allocations, ecosystem campaigns, and launch unlock schedules.",
+      Icon: Network
+    }
+  ];
+
   return (
     <>
+      <header className="mobile-header">
+        <button
+          className="mobile-brand"
+          type="button"
+          onClick={() => handleMobileNavigation("home")}
+          aria-label="Go to home"
+        >
+          <span className="brand-logo">
+            <img src="/iopn-logo.png" alt="VestFlow logo" />
+          </span>
+          <span className="brand-copy">
+            <strong className="brand-title">VestFlow Protocol</strong>
+            <small className="brand-subtitle">IOPn / OPN Testnet</small>
+          </span>
+        </button>
+      </header>
+
+      <nav className="mobile-bottom-nav" aria-label="Mobile page navigation" ref={mobileMoreMenuRef}>
+        {navItems.slice(0, 4).map(({ label, id, Icon }) => (
+          <button
+            key={id}
+            type="button"
+            className={activePage === id ? "active" : ""}
+            onClick={() => handleMobileNavigation(id)}
+            aria-current={activePage === id ? "page" : undefined}
+          >
+            <Icon aria-hidden="true" size={19} strokeWidth={2.25} />
+            <span>{id === "track" ? "Track" : label}</span>
+          </button>
+        ))}
+        <button
+          type="button"
+          className={["roadmap", "about"].includes(activePage) || mobileMoreOpen ? "active" : ""}
+          onClick={() => setMobileMoreOpen((open) => !open)}
+          aria-expanded={mobileMoreOpen}
+          aria-controls="mobile-more-menu"
+        >
+          <Menu aria-hidden="true" size={19} strokeWidth={2.25} />
+          <span>More</span>
+        </button>
+        {mobileMoreOpen && (
+          <div id="mobile-more-menu" className="mobile-more-menu" role="menu">
+            {navItems.slice(4).map(({ label, id, Icon }) => (
+              <button
+                key={id}
+                type="button"
+                className={activePage === id ? "active" : ""}
+                onClick={() => handleMobileNavigation(id)}
+                role="menuitem"
+              >
+                <Icon aria-hidden="true" size={17} strokeWidth={2.35} />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </nav>
+
       <aside className={sidebarCollapsed ? "sidebar is-collapsed" : "sidebar"}>
         <div className="sidebar-top">
         <button
@@ -1622,26 +2077,11 @@ function App() {
         <div key={activePage} className="page-transition">
         {activePage === "home" && (
           <>
-        <section className="hero page-panel reveal reveal-up" data-reveal>
-          <div className="hero-grid" aria-hidden="true" />
-          <div className="hero-orb" aria-hidden="true" />
-          <div className="hero-particles" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-          </div>
-          <div className="hero-vault" aria-hidden="true">
-            <div className="vault-halo" />
-            <div className="vault-shell">
-              <div className="vault-ring" />
-              <div className="vault-lock">
-                <span />
-              </div>
-            </div>
-          </div>
+        <section className="hero home-hero page-panel reveal reveal-up" data-reveal>
+          <video className="home-hero-video" autoPlay muted loop playsInline preload="metadata" aria-hidden="true">
+            <source src="/home_bg.mp4" type="video/mp4" />
+          </video>
+          <div className="home-hero-overlay" aria-hidden="true" />
           <div className="hero-content">
             <div className="badge">OPN Builders / Testnet DeFi Infrastructure</div>
             <div className="hero-brand">
@@ -1795,15 +2235,26 @@ function App() {
                     />
                     {hasKnownWalletBalance ? (
                       <div className="amount-tools">
-                        <input
-                          className="amount-slider"
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={amountSliderValue}
-                          onChange={(e) => updateAmountFromBalance(Number(e.target.value))}
-                          aria-label="Amount percentage of wallet balance"
-                        />
+                        <div className={`amount-slider-wrap ${isAmountSliding ? "is-sliding" : ""}`}>
+                          <input
+                            className={`amount-slider ${isAmountSliding ? "is-sliding" : ""}`}
+                            type="range"
+                            min="0"
+                            max="100"
+                            value={amountSliderValue}
+                            onChange={(e) => updateAmountFromBalance(Number(e.target.value))}
+                            onPointerDown={() => setIsAmountSliding(true)}
+                            onPointerUp={() => setIsAmountSliding(false)}
+                            onPointerCancel={() => setIsAmountSliding(false)}
+                            onMouseDown={() => setIsAmountSliding(true)}
+                            onMouseUp={() => setIsAmountSliding(false)}
+                            onTouchStart={() => setIsAmountSliding(true)}
+                            onTouchEnd={() => setIsAmountSliding(false)}
+                            onBlur={() => setIsAmountSliding(false)}
+                            style={{ "--amount-progress": `${amountSliderValue}%` }}
+                            aria-label="Amount percentage of wallet balance"
+                          />
+                        </div>
                         <div className="chip-row">
                           <button type="button" onClick={() => updateAmountFromBalance(25)}>25%</button>
                           <button type="button" onClick={() => updateAmountFromBalance(50)}>50%</button>
@@ -1865,8 +2316,15 @@ function App() {
                     />
                   )}
 
-                  <button className="primary-action" onClick={createVault} disabled={assetTab !== "native" || Boolean(pendingAction)}>
-                    {pendingAction === "create" ? "Creating Lock..." : "Create Secure Lock"}
+                  <button
+                    className={`primary-action action-button create-lock-button ${pendingAction === "create" ? "is-loading" : ""}`}
+                    onClick={createVault}
+                    disabled={assetTab !== "native" || Boolean(pendingAction)}
+                    aria-busy={pendingAction === "create"}
+                    aria-label={pendingAction === "create" ? "Creating secure lock" : "Create Secure Lock"}
+                  >
+                    <span className="button-label">Create Secure Lock</span>
+                    <span className="button-spinner" aria-hidden="true" />
                   </button>
                 </div>
               </div>
@@ -1881,18 +2339,27 @@ function App() {
           </div>
 
           <div className="share-proof-section">
-            <div className="share-proof-3d-wrap">
+            <div className="share-proof-3d-wrap proof-card-activated">
               <div className="share-proof-card">
                 <div className="share-proof-glow" aria-hidden="true" />
+                <div className="share-proof-circuit" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </div>
                 <div className="share-proof-content">
                   <div className="share-proof-header">
-                    <span className="share-proof-badge">
-                      <ShieldCheck size={14} strokeWidth={2.4} aria-hidden="true" />
-                      PROOF RECEIPT
-                    </span>
-                    <div>
+                    <div className="share-proof-heading">
+                      <span className="share-proof-badge">
+                        <ShieldCheck size={14} strokeWidth={2.4} aria-hidden="true" />
+                        PROOF RECEIPT
+                      </span>
                       <h2 className="share-proof-title">Vault #{proofReceipt.vaultId}</h2>
                       <p className="share-proof-subtitle">created on OPN Testnet</p>
+                    </div>
+                    <div className="proof-card-brand">
+                      <img src={OPN_BALANCE_LOGO} alt="OPN logo" className="proof-card-brand-logo" />
                     </div>
                   </div>
                   <div className="share-proof-body">
@@ -1914,11 +2381,15 @@ function App() {
               </div>
             </div>
             <div className="share-proof-actions">
-              <button type="button" className="share-x-action" onClick={shareProofToX}>Share to X</button>
-              <button type="button" className="download-receipt-action" onClick={downloadReceiptPng}>Download Receipt</button>
-              <button type="button" className="copy-proof-action" onClick={copyProofSummary}>Copy Proof Summary</button>
-              <button type="button" className="track-vault-action" onClick={trackLatestVault}>Track this Vault</button>
-              <button type="button" className="create-another-action" onClick={createAnotherLock}>Create Another Lock</button>
+              <span className="share-proof-actions-label">Proof actions</span>
+              <div className="share-proof-action-row primary">
+                <button type="button" className="share-x-action" onClick={shareProofToX}>Share to X</button>
+                <button type="button" className="download-receipt-action" onClick={downloadReceiptPng}>Download Receipt</button>
+              </div>
+              <div className="share-proof-action-row secondary">
+                <button type="button" className="track-vault-action" onClick={trackLatestVault}>Track this Vault</button>
+                <button type="button" className="create-another-action" onClick={createAnotherLock}>Create Another Lock</button>
+              </div>
             </div>
           </div>
         </section>
@@ -1947,9 +2418,18 @@ function App() {
                   <p>Select a vault linked to your connected wallet.</p>
                 </div>
                 <div className="my-vaults-toolbar">
-                  <span>{account ? `${myVaults.length} vault${myVaults.length === 1 ? "" : "s"} found` : "Wallet required"}</span>
+                  <span>{account ? myVaultsShownLabel : "Wallet required"}</span>
                   <button type="button" onClick={() => loadMyVaults(true)} disabled={!account || isVaultListLoading}>
                     {isVaultListLoading ? "Refreshing..." : "Refresh My Vaults"}
+                  </button>
+                  <button
+                    type="button"
+                    className={`toggle-claimed-vaults ${showClaimedVaults ? "active" : ""}`}
+                    onClick={() => setShowClaimedVaults((enabled) => !enabled)}
+                    disabled={!account}
+                    aria-pressed={showClaimedVaults}
+                  >
+                    {showClaimedVaults ? "Hide claimed vaults" : "Show claimed vaults"}
                   </button>
                 </div>
                 <div className="my-vaults-list">
@@ -1964,8 +2444,8 @@ function App() {
                     </div>
                   ) : vaultLoadError ? (
                     <div className="empty-state compact-empty">{vaultLoadError}</div>
-                  ) : myVaults.length ? (
-                    myVaults.map((vault) => {
+                  ) : visibleMyVaults.length ? (
+                    visibleMyVaults.map((vault) => {
                       const status = getVaultStatusDetails(vault);
                       return (
                         <button
@@ -2013,11 +2493,14 @@ function App() {
             </div>
             <div className="claim-center-actions">
               <button
-                className={!vaultId.trim() ? "soft-disabled" : ""}
+                className={`action-button claim-vault-button ${!vaultId.trim() ? "soft-disabled" : ""} ${pendingAction === "claim" ? "is-loading" : ""}`}
                 onClick={claimVault}
                 disabled={Boolean(pendingAction)}
+                aria-busy={pendingAction === "claim"}
+                aria-label={pendingAction === "claim" ? "Claiming vault" : "Claim Vault"}
               >
-                {pendingAction === "claim" ? "Claiming..." : "Claim Vault"}
+                <span className="button-label">Claim Vault</span>
+                <span className="button-spinner" aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -2154,89 +2637,157 @@ function App() {
         )}
 
         {activePage === "guide" && (
-          <>
-        <section className="demo-guide page-panel reveal reveal-up" data-reveal>
-          <p className="section-kicker">Demo Guide</p>
-          <h2><span>How to test</span> <span className="gradient-title">this demo</span></h2>
-          <ol>
-            <li>Connect wallet</li>
-            <li>Use OPN Testnet</li>
-            <li>Enter recipient and amount</li>
-            <li>Choose lock style</li>
-            <li>Create Secure Lock</li>
-            <li>Track Vault ID</li>
-            <li>Check claimable amount</li>
-            <li>Verify on OPN Explorer</li>
-          </ol>
-        </section>
+          <section className="guide-journey page-panel reveal reveal-up" data-reveal>
+            <div className="guide-hero">
+              <span className="section-kicker">VESTFLOW GUIDE</span>
+              <h2 className="guide-title"><span>How VestFlow</span> <span className="gradient-title">Works</span></h2>
+              <p>
+                A guided on-chain flow for locking native OPN, tracking vault status, and sharing proof receipts.
+              </p>
+            </div>
 
-        <section className="faq-grid" data-reveal>
-          <div className="reveal reveal-scale" style={{ "--delay": "0ms" }}><h3>Is this mainnet?</h3><p>No. This is a testnet demo on OPN Testnet. Do not send mainnet funds.</p></div>
-          <div className="reveal reveal-scale" style={{ "--delay": "80ms" }}><h3>What asset is supported?</h3><p>The current contract supports native OPN locks.</p></div>
-          <div className="reveal reveal-scale" style={{ "--delay": "160ms" }}><h3>Is ERC-20 supported?</h3><p>Not yet. The ERC-20 tab is marked Coming Soon until a new contract is deployed.</p></div>
-          <div className="reveal reveal-scale" style={{ "--delay": "240ms" }}><h3>Where is the contract?</h3><p><a href={EXPLORER_URL} target="_blank" rel="noreferrer">View it on OPN Explorer</a>.</p></div>
-        </section>
-          </>
+            <div className="guide-card-grid">
+              {guideSteps.map((step, index) => {
+                const sideClass = index % 2 === 0 ? "left" : "right";
+                return (
+                  <article
+                    key={step.badge}
+                    className={`guide-flow-card ${sideClass} reveal reveal-up`}
+                    data-reveal
+                    style={{ "--delay": `${index * 70}ms` }}
+                  >
+                    <span className="guide-step-badge">{step.badge}</span>
+                    <div className="guide-flow-header">
+                      <span className="guide-icon" aria-hidden="true">
+                        <step.Icon size={18} strokeWidth={2.3} />
+                      </span>
+                      <div className="guide-flow-copy">
+                        <h3>{step.title}</h3>
+                        <span className="guide-flow-arrow" aria-hidden="true">
+                          <ChevronRight size={14} strokeWidth={2.4} />
+                        </span>
+                      </div>
+                    </div>
+                    <p>{step.description}</p>
+                  </article>
+                );
+              })}
+            </div>
+
+            <section className="guide-resources">
+              <div className="guide-resources-heading">
+                <span className="section-kicker">Useful Links</span>
+                <p>Quick links for demo testing and verification.</p>
+              </div>
+              <div className="guide-resources-grid">
+                <a href={DAPP_URL} target="_blank" rel="noreferrer">
+                  <strong>VestFlow Demo</strong>
+                  <span>vestflow-protocol.vercel.app</span>
+                </a>
+                <a href={EXPLORER_URL} target="_blank" rel="noreferrer">
+                  <strong>OPN Explorer</strong>
+                  <span>testnet.iopn.tech</span>
+                </a>
+                <a href={OPN_FAUCET_URL} target="_blank" rel="noreferrer">
+                  <strong>OPN Faucet</strong>
+                  <span>faucet.iopn.tech</span>
+                </a>
+                <a href={GITHUB_URL} target="_blank" rel="noreferrer">
+                  <strong>GitHub Repository</strong>
+                  <span>github.com/ekypanawa/vestflow-protocol</span>
+                </a>
+              </div>
+            </section>
+          </section>
         )}
 
         {activePage === "roadmap" && (
           <>
         <section className="roadmap page-panel reveal reveal-up" data-reveal>
           <p className="section-kicker">Roadmap</p>
-          <h2><span className="gradient-title">Q1-Q4 2026</span></h2>
-          <div className="timeline">
-            <div className="reveal reveal-scale" style={{ "--delay": "0ms" }}>
-              <span>Q1 2026</span>
-              <h3>MVP and OPN Testnet deployment</h3>
-              <ul>
-                <li>Deploy VestFlow smart contract on OPN Testnet</li>
-                <li>Support native OPN lock and vesting vaults</li>
-                <li>Add vault creation, claim flow, and proof receipt</li>
-                <li>Add multi-wallet connection and on-chain explorer links</li>
-                <li>Build the first public dashboard for tracking vault status</li>
-              </ul>
-            </div>
-            <div className="reveal reveal-scale" style={{ "--delay": "80ms" }}>
-              <span>Q2 2026</span>
-              <h3>Builder feedback and product refinement</h3>
-              <ul>
-                <li>Improve UX based on builder and community feedback</li>
-                <li>Add better vault indexing and wallet-based vault discovery</li>
-                <li>Improve vault analytics, claim status, and activity history</li>
-                <li>Add public usage examples for contributors, grants, and community rewards</li>
-                <li>Polish mobile experience and dashboard performance</li>
-              </ul>
-            </div>
-            <div className="reveal reveal-scale" style={{ "--delay": "160ms" }}>
-              <span>Q3 2026</span>
-              <h3>Advanced distribution flows</h3>
-              <ul>
-                <li>Add DAO grant and contributor reward templates</li>
-                <li>Explore multi-recipient vault creation</li>
-                <li>Add richer dashboard data for teams and recipients</li>
-                <li>Improve proof sharing for communities and grant programs</li>
-                <li>Research reusable vault templates for ecosystem campaigns</li>
-              </ul>
-            </div>
-            <div className="reveal reveal-scale" style={{ "--delay": "240ms" }}>
-              <span>Q4 2026</span>
-              <h3>Security, scalability, and expansion research</h3>
-              <ul>
-                <li>Prepare for security review and audit readiness</li>
-                <li>Improve contract safety, validation, and edge-case handling</li>
-                <li>Research ERC-20 support for future token vesting</li>
-                <li>Explore mainnet readiness if OPN ecosystem conditions are ready</li>
-                <li>Document integration paths for OPN builders and ecosystem partners</li>
-              </ul>
-            </div>
+          <h2>Roadmap</h2>
+          <h3 className="roadmap-subtitle gradient-title">Q1-Q4 2026</h3>
+          <p className="roadmap-description">
+            VestFlow roadmap for testnet deployment, builder feedback, advanced distribution flows, and long-term OPN ecosystem readiness.
+          </p>
+
+          <div className="roadmap-timeline" ref={roadmapTimelineRef}>
+            <article className="roadmap-item left reveal reveal-up" data-reveal style={{ "--delay": "0ms" }}>
+              <span className="roadmap-node" aria-hidden="true" />
+              <div className="roadmap-card">
+                <span className="roadmap-step-badge">Step 01</span>
+                <span className="roadmap-quarter">Q1 2026</span>
+                <h3 className="roadmap-title">MVP and OPN Testnet deployment</h3>
+                <ul className="roadmap-list">
+                  <li>Deploy VestFlow smart contract on OPN Testnet</li>
+                  <li>Support native OPN lock and vesting vaults</li>
+                  <li>Add vault creation, claim flow, and proof receipt</li>
+                  <li>Add multi-wallet connection and on-chain explorer links</li>
+                  <li>Build the first public dashboard for tracking vault status</li>
+                </ul>
+              </div>
+            </article>
+
+            <article className="roadmap-item right reveal reveal-up" data-reveal style={{ "--delay": "80ms" }}>
+              <span className="roadmap-node" aria-hidden="true" />
+              <div className="roadmap-card">
+                <span className="roadmap-step-badge">Step 02</span>
+                <span className="roadmap-quarter">Q2 2026</span>
+                <h3 className="roadmap-title">Builder feedback and product refinement</h3>
+                <ul className="roadmap-list">
+                  <li>Improve UX based on builder and community feedback</li>
+                  <li>Add better vault indexing and wallet-based vault discovery</li>
+                  <li>Improve vault analytics, claim status, and activity history</li>
+                  <li>Add public usage examples for contributors, grants, and community rewards</li>
+                  <li>Polish mobile experience and dashboard performance</li>
+                </ul>
+              </div>
+            </article>
+
+            <article className="roadmap-item left reveal reveal-up" data-reveal style={{ "--delay": "160ms" }}>
+              <span className="roadmap-node" aria-hidden="true" />
+              <div className="roadmap-card">
+                <span className="roadmap-step-badge">Step 03</span>
+                <span className="roadmap-quarter">Q3 2026</span>
+                <h3 className="roadmap-title">Advanced distribution flows</h3>
+                <ul className="roadmap-list">
+                  <li>Add DAO grant and contributor reward templates</li>
+                  <li>Explore multi-recipient vault creation</li>
+                  <li>Add richer dashboard data for teams and recipients</li>
+                  <li>Improve proof sharing for communities and grant programs</li>
+                  <li>Research reusable vault templates for ecosystem campaigns</li>
+                </ul>
+              </div>
+            </article>
+
+            <article className="roadmap-item right reveal reveal-up" data-reveal style={{ "--delay": "240ms" }}>
+              <span className="roadmap-node" aria-hidden="true" />
+              <div className="roadmap-card">
+                <span className="roadmap-step-badge">Step 04</span>
+                <span className="roadmap-quarter">Q4 2026</span>
+                <h3 className="roadmap-title">Security, scalability, and expansion research</h3>
+                <ul className="roadmap-list">
+                  <li>Prepare for security review and audit readiness</li>
+                  <li>Improve contract safety, validation, and edge-case handling</li>
+                  <li>Research ERC-20 support for future token vesting</li>
+                  <li>Explore mainnet readiness if OPN ecosystem conditions are ready</li>
+                  <li>Document integration paths for OPN builders and ecosystem partners</li>
+                </ul>
+              </div>
+            </article>
+
+            <article className="roadmap-item vision reveal reveal-up" data-reveal style={{ "--delay": "320ms" }}>
+              <span className="roadmap-node" aria-hidden="true" />
+              <div className="roadmap-card roadmap-vision-card">
+                <span className="roadmap-step-badge">Step 05</span>
+                <span className="roadmap-quarter">Long-term Vision</span>
+                <h3 className="roadmap-title"><span>Reusable fund distribution</span> <span className="gradient-title">for OPN builders</span></h3>
+                <p>VestFlow aims to become a reusable fund distribution layer for the OPN ecosystem.</p>
+                <p>The goal is to help builders, DAOs, grant programs, contributors, and communities manage vesting, rewards, treasury payouts, and launch unlocks transparently on-chain.</p>
+                <p>Instead of relying on manual payments, private spreadsheets, or trust-based promises, VestFlow turns fund distribution into a verifiable smart contract workflow on OPN Chain.</p>
+              </div>
+            </article>
           </div>
-        </section>
-        <section className="vision-card reveal reveal-up" data-reveal>
-          <p className="section-kicker">Long-term Vision</p>
-          <h2><span>Reusable fund distribution</span> <span className="gradient-title">for OPN builders</span></h2>
-          <p>VestFlow aims to become a reusable fund distribution layer for the OPN ecosystem.</p>
-          <p>The goal is to help builders, DAOs, grant programs, contributors, and communities manage vesting, rewards, treasury payouts, and launch unlocks transparently on-chain.</p>
-          <p>Instead of relying on manual payments, private spreadsheets, or trust-based promises, VestFlow turns fund distribution into a verifiable smart contract workflow on OPN Chain.</p>
         </section>
           </>
         )}

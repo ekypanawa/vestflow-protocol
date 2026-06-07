@@ -21,7 +21,10 @@ import {
   Map,
   Moon,
   Menu,
-  SearchCheck,
+  HandCoins,
+  GitBranch,
+  MessageCircle,
+  Blocks,
   ShieldCheck,
   Share2,
   Sun,
@@ -75,7 +78,7 @@ const ABI = [
 const navItems = [
   { label: "Home", id: "home", Icon: Home },
   { label: "Lock", id: "lock", Icon: LockKeyhole },
-  { label: "Track & Claim", id: "track", Icon: SearchCheck },
+  { label: "Track & Claim", id: "track", Icon: HandCoins },
   { label: "Guide", id: "guide", Icon: Workflow },
   { label: "Roadmap", id: "roadmap", Icon: Map },
   { label: "About", id: "about", Icon: Info }
@@ -521,6 +524,7 @@ function App() {
   const releaseDateInputRef = useRef(null);
   const proofSuccessRef = useRef(null);
   const roadmapTimelineRef = useRef(null);
+  const mainContentRef = useRef(null);
 
   const contractReady = useMemo(() => Boolean(VESTFLOW_ADDRESS), []);
   const contractStatus = account ? "Connected" : "Not Connected";
@@ -535,6 +539,7 @@ function App() {
   const amountSliderValue = hasKnownWalletBalance && parsedWalletBalance > 0 && Number.isFinite(parsedAmountValue)
     ? Math.min(100, Math.max(0, Math.round((parsedAmountValue / parsedWalletBalance) * 100)))
     : 0;
+  const safeAmountPercent = Number.isFinite(amountSliderValue) ? Math.min(100, Math.max(0, amountSliderValue)) : 0;
   const hasAvailableWalletProvider = useMemo(
     () => Boolean(selectedWalletProvider?.request || window.ethereum?.request || detectedWallets.some((wallet) => getWalletProvider(wallet)?.request)),
     [detectedWallets, selectedWalletProvider]
@@ -806,6 +811,72 @@ function App() {
       window.removeEventListener("resize", requestProgressUpdate);
       if (animationFrameId) window.cancelAnimationFrame(animationFrameId);
     };
+  }, [activePage]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    if ("scrollRestoration" in window.history) {
+      window.history.scrollRestoration = "manual";
+    }
+
+    const scrollToTop = () => {
+      const root = document.documentElement;
+      const body = document.body;
+      const previousRootBehavior = root.style.scrollBehavior;
+      const previousBodyBehavior = body.style.scrollBehavior;
+      root.style.scrollBehavior = "auto";
+      body.style.scrollBehavior = "auto";
+
+      try {
+        window.scrollTo(0, 0);
+      } catch {
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      }
+
+      root.scrollTop = 0;
+      body.scrollTop = 0;
+      mainContentRef.current?.scrollTo?.(0, 0);
+      if (mainContentRef.current) mainContentRef.current.scrollTop = 0;
+
+      window.requestAnimationFrame(() => {
+        root.style.scrollBehavior = previousRootBehavior;
+        body.style.scrollBehavior = previousBodyBehavior;
+      });
+    };
+
+    scrollToTop();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const scrollToTop = () => {
+      const root = document.documentElement;
+      const body = document.body;
+      const previousRootBehavior = root.style.scrollBehavior;
+      const previousBodyBehavior = body.style.scrollBehavior;
+      root.style.scrollBehavior = "auto";
+      body.style.scrollBehavior = "auto";
+
+      try {
+        window.scrollTo(0, 0);
+      } catch {
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      }
+
+      root.scrollTop = 0;
+      body.scrollTop = 0;
+      mainContentRef.current?.scrollTo?.(0, 0);
+      if (mainContentRef.current) mainContentRef.current.scrollTop = 0;
+
+      window.requestAnimationFrame(() => {
+        root.style.scrollBehavior = previousRootBehavior;
+        body.style.scrollBehavior = previousBodyBehavior;
+      });
+    };
+
+    const frame = window.requestAnimationFrame(scrollToTop);
+    return () => window.cancelAnimationFrame(frame);
   }, [activePage]);
 
   useEffect(() => {
@@ -1832,7 +1903,7 @@ function App() {
       badge: "STEP 05",
       title: "Track vesting status",
       description: "Go to Track & Claim, select a vault, and review claimable OPN, vesting status, countdown, and contract data.",
-      Icon: SearchCheck
+      Icon: HandCoins
     },
     {
       badge: "STEP 06",
@@ -1851,6 +1922,45 @@ function App() {
       title: "Use it for builder flows",
       description: "VestFlow can support contributor rewards, grant distribution, DAO allocations, ecosystem campaigns, and launch unlock schedules.",
       Icon: Network
+    }
+  ];
+
+  const aboutOfficialLinks = [
+    {
+      title: "Official Website",
+      href: "https://iopn.io/",
+      description: "Internet of People ecosystem, OPN Chain, identity, AI, and sovereign infrastructure.",
+      Icon: Globe,
+      accent: "website"
+    },
+    {
+      title: "X / Twitter",
+      href: "https://x.com/IOPn_io",
+      description: "Follow IOPn ecosystem updates and builder announcements.",
+      mark: "𝕏",
+      accent: "social"
+    },
+    {
+      title: "Discord / Community",
+      href: "https://iopn.io/",
+      description: "Join the IOPn community through the official website community entry.",
+      Icon: MessageCircle,
+      note: "Discord invite currently routes through the official website.",
+      accent: "community"
+    },
+    {
+      title: "OPN Explorer",
+      href: "https://testnet.iopn.tech/",
+      description: "Explore OPN Testnet blocks, transactions, contracts, and wallet activity.",
+      Icon: Blocks,
+      accent: "explorer"
+    },
+    {
+      title: "VestFlow GitHub",
+      href: GITHUB_URL,
+      description: "View the source code and development progress for VestFlow Protocol.",
+      Icon: GitBranch,
+      accent: "github"
     }
   ];
 
@@ -2073,7 +2183,7 @@ function App() {
         ))}
       </div>
 
-      <main className={sidebarCollapsed ? "page sidebar-collapsed" : "page"}>
+      <main ref={mainContentRef} className={sidebarCollapsed ? "page sidebar-collapsed" : "page"}>
         <div key={activePage} className="page-transition">
         {activePage === "home" && (
           <>
@@ -2149,7 +2259,7 @@ function App() {
           <>
         {!proofReceipt ? (
         <section className="lock-page page-panel">
-            <div className="card lock-card reveal reveal-up" data-reveal>
+            <div className="card lock-card tech-card reveal reveal-up" data-reveal>
               <div className="card-heading">
                 <p className="section-kicker">Main Product Dashboard</p>
                 <h2><span>Lock</span> <span className="gradient-title">Assets</span></h2>
@@ -2157,7 +2267,7 @@ function App() {
               </div>
 
               <div className="lock-form-grid">
-                <div className="lock-form-column">
+                <div className="lock-form-column tech-card">
                   <p className="form-group-title">Recipient & Amount</p>
 
                   <div className="tabs" role="tablist" aria-label="Asset type">
@@ -2235,9 +2345,12 @@ function App() {
                     />
                     {hasKnownWalletBalance ? (
                       <div className="amount-tools">
-                        <div className={`amount-slider-wrap ${isAmountSliding ? "is-sliding" : ""}`}>
+                        <div className={`amount-slider-shell ${isAmountSliding ? "is-sliding" : ""}`} style={{ "--amount-progress": `${safeAmountPercent}%` }}>
+                          <div className="amount-slider-track" aria-hidden="true">
+                            <span className="amount-slider-fill" />
+                          </div>
                           <input
-                            className={`amount-slider ${isAmountSliding ? "is-sliding" : ""}`}
+                            className={`amount-slider-input ${isAmountSliding ? "is-sliding" : ""}`}
                             type="range"
                             min="0"
                             max="100"
@@ -2251,7 +2364,6 @@ function App() {
                             onTouchStart={() => setIsAmountSliding(true)}
                             onTouchEnd={() => setIsAmountSliding(false)}
                             onBlur={() => setIsAmountSliding(false)}
-                            style={{ "--amount-progress": `${amountSliderValue}%` }}
                             aria-label="Amount percentage of wallet balance"
                           />
                         </div>
@@ -2268,7 +2380,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="lock-form-column">
+                <div className="lock-form-column tech-card">
                   <p className="form-group-title">Vesting Schedule</p>
 
                   <label>Lockup Style</label>
@@ -2410,9 +2522,9 @@ function App() {
             </div>
           </div>
 
-          <div className="card claim-center-card compact-panel reveal reveal-up" data-reveal>
+          <div className="card claim-center-card compact-panel tech-card claim-tech-card reveal reveal-up" data-reveal>
             <div className="claim-center-card-grid">
-              <div className="vault-selection-panel reveal reveal-left" data-reveal>
+              <div className="vault-selection-panel claim-tech-card reveal reveal-left" data-reveal>
                 <div className="card-heading">
                   <h3>My Vaults</h3>
                   <p>Select a vault linked to your connected wallet.</p>
@@ -2477,7 +2589,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="vault-details-panel reveal reveal-right" data-reveal>
+              <div className="vault-details-panel claim-tech-card reveal reveal-right" data-reveal>
                 <div className="card-heading">
                   <h3>Vault Status</h3>
                   <p>Claimable amount and status for the selected vault.</p>
@@ -2506,7 +2618,7 @@ function App() {
           </div>
 
           <div className="track-claim-support-grid">
-              <div className="card live-reader compact-panel compact-reader reveal reveal-up" data-reveal>
+              <div className="card live-reader compact-panel compact-reader claim-tech-card reveal reveal-up" data-reveal>
                 <div className="card-heading">
                   <p className="section-kicker">Contract Summary</p>
                   <h2><span>OPN</span> <span className="gradient-title">Contract Data</span></h2>
@@ -2620,6 +2732,35 @@ function App() {
             <span>Builder commitment</span>
             <h3>Shipping in public on OPN Testnet.</h3>
             <p>The MVP keeps the contract, deploy transaction, repository, and test guide visible so OPN Builders can evaluate real integration progress.</p>
+          </div>
+        </section>
+
+        <section className="official-links page-panel reveal reveal-up" data-reveal>
+          <div className="official-links-heading">
+            <p className="section-kicker">Official Links</p>
+            <h2><span>Explore IOPn</span> <span className="gradient-title">ecosystem resources</span></h2>
+            <p>Official links for IOPn ecosystem updates, the OPN explorer, and the VestFlow repository.</p>
+          </div>
+          <div className="official-links-grid">
+            {aboutOfficialLinks.map(({ title, href, description, Icon, mark, note, accent }) => (
+              <a
+                key={title}
+                className={`official-link-card tech-card ${accent ? `accent-${accent}` : ""}`}
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <div className="official-link-top">
+                  <span className="official-link-icon" aria-hidden="true">
+                    {Icon ? <Icon size={18} strokeWidth={2.2} /> : <span className="official-link-mark">{mark}</span>}
+                  </span>
+                  <ExternalLink aria-hidden="true" size={16} />
+                </div>
+                <strong>{title}</strong>
+                <p>{description}</p>
+                {note ? <small className="official-link-note">{note}</small> : null}
+              </a>
+            ))}
           </div>
         </section>
 

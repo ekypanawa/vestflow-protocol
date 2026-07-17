@@ -56,6 +56,28 @@ const OPN_BALANCE_LOGO = "/opn-balance-logo.png";
 const GAS_BUFFER_OPN = 0.005;
 const NOTE_OPTIONS = ["Contributor Reward", "Grant Distribution", "Team Vesting", "Community Campaign", "Ecosystem Reserve"];
 const CUSTOM_NOTE_OPTION = "Other / Custom note";
+const VESTED_NOTE_CHART_COLORS = ["#8ee7ff", "#a855f7", "#ec4899", "#60a5fa"];
+const VAULT_BREAKDOWN_COLORS = {
+  claimed: "#8ee7ff",
+  claimable: "#a855f7",
+  remaining: "#f59e0b"
+};
+const FALLBACK_PROTOCOL_OVERVIEW = {
+  source: "fallback",
+  totalVaults: 42,
+  totalLocked: 1284.75,
+  totalClaimed: 392.4,
+  activeVestings: 31,
+  segments: [
+    { label: "Team Vesting", amount: 360.5 },
+    { label: "Contributor Reward", amount: 244.75 },
+    { label: "Ecosystem Reward", amount: 218.25 },
+    { label: "Grant Distribution", amount: 176.8 },
+    { label: "Treasury Allocation", amount: 142.15 },
+    { label: "Community Incentive", amount: 92.3 },
+    { label: "Advisor Vesting", amount: 50 }
+  ]
+};
 const DURATION_PRESETS = [
   { label: "7 days", days: 7 },
   { label: "30 days", days: 30 },
@@ -387,6 +409,126 @@ function getVaultUnlockNote(vault) {
   return "Linear vesting unlocks gradually over time. Claimable amount may start small and increase until the release date.";
 }
 
+function getVaultDescriptionLabel(vault) {
+  return String(vault?.description || vault?.note || vault?.title || "").trim() || "Other";
+}
+
+function buildProtocolOverviewFromVaults(vaults, source = "live") {
+  const groupedVaults = new Map();
+  let totalLockedRaw = 0n;
+  let totalClaimedRaw = 0n;
+  let activeVestings = 0;
+
+  (vaults || []).forEach((vault) => {
+    const label = getVaultDescriptionLabel(vault);
+    const amountRaw = BigInt(vault?.amountRaw || 0);
+    const claimedRaw = BigInt(vault?.claimedRaw || 0);
+    if (amountRaw <= 0n) return;
+
+    totalLockedRaw += amountRaw;
+    totalClaimedRaw += claimedRaw;
+    groupedVaults.set(label, (groupedVaults.get(label) || 0n) + amountRaw);
+
+    if (!vault?.cancelled && claimedRaw < amountRaw) {
+      activeVestings += 1;
+    }
+  });
+
+  const totalLocked = Number(formatEther(totalLockedRaw));
+  const totalClaimed = Number(formatEther(totalClaimedRaw));
+
+  if (totalLockedRaw === 0n) {
+    return buildFallbackProtocolOverview();
+  }
+
+  const segments = Array.from(groupedVaults.entries())
+    .map(([label, rawValue]) => {
+      const amount = Number(formatEther(rawValue));
+      return {
+        label,
+        amount,
+        percentage: totalLocked > 0 ? (amount / totalLocked) * 100 : 0
+      };
+    })
+    .sort((left, right) => right.amount - left.amount)
+    .map((segment, index) => ({
+      ...segment,
+      color: VESTED_NOTE_CHART_COLORS[index % VESTED_NOTE_CHART_COLORS.length]
+    }));
+
+  return {
+    source,
+    totalVaults: vaults.length,
+    totalLocked,
+    totalClaimed,
+    activeVestings,
+    segments
+  };
+}
+
+function buildFallbackProtocolOverview() {
+  const totalLocked = FALLBACK_PROTOCOL_OVERVIEW.segments.reduce((total, segment) => total + segment.amount, 0);
+  return {
+    ...FALLBACK_PROTOCOL_OVERVIEW,
+    totalLocked,
+    segments: FALLBACK_PROTOCOL_OVERVIEW.segments.map((segment, index) => ({
+      ...segment,
+      color: VESTED_NOTE_CHART_COLORS[index % VESTED_NOTE_CHART_COLORS.length],
+      percentage: totalLocked > 0 ? (segment.amount / totalLocked) * 100 : 0
+    }))
+  };
+}
+
+function readRawAmount(value) {
+  try {
+    const raw = BigInt(value || 0);
+    return raw > 0n ? raw : 0n;
+  } catch {
+    return 0n;
+  }
+}
+
+function formatRawOpn(value, decimals = 2) {
+  return formatDisplayAmount(formatEther(value), decimals);
+}
+
+function buildVaultBreakdown(vault) {
+  const totalRaw = readRawAmount(vault?.amountRaw);
+  const claimedRaw = readRawAmount(vault?.claimedRaw);
+  const claimableRaw = readRawAmount(vault?.claimableRaw);
+  const vestedRaw = readRawAmount(vault?.vestedRaw);
+
+  if (!vault || totalRaw === 0n) {
+    return { totalRaw, total: 0, segments: [] };
+  }
+
+  const safeClaimedRaw = claimedRaw > totalRaw ? totalRaw : claimedRaw;
+  const claimableCapacity = totalRaw > safeClaimedRaw ? totalRaw - safeClaimedRaw : 0n;
+  const safeClaimableRaw = claimableRaw > claimableCapacity ? claimableCapacity : claimableRaw;
+  const vestedFloorRaw = safeClaimedRaw + safeClaimableRaw;
+  const effectiveVestedRaw = vestedRaw > vestedFloorRaw ? vestedRaw : vestedFloorRaw;
+  const safeVestedRaw = effectiveVestedRaw > totalRaw ? totalRaw : effectiveVestedRaw;
+  const remainingRaw = totalRaw > safeVestedRaw ? totalRaw - safeVestedRaw : 0n;
+
+  const candidates = [
+    { key: "claimed", label: "Claimed OPN", raw: safeClaimedRaw, color: VAULT_BREAKDOWN_COLORS.claimed },
+    { key: "claimable", label: "Claimable OPN", raw: safeClaimableRaw, color: VAULT_BREAKDOWN_COLORS.claimable },
+    { key: "remaining", label: "Remaining OPN", raw: remainingRaw, color: VAULT_BREAKDOWN_COLORS.remaining }
+  ];
+
+  return {
+    totalRaw,
+    total: Number(formatEther(totalRaw)),
+    segments: candidates
+      .filter((segment) => segment.raw > 0n)
+      .map((segment) => ({
+        ...segment,
+        amount: Number(formatEther(segment.raw)),
+        percentage: totalRaw > 0n ? Number((segment.raw * 10000n) / totalRaw) / 100 : 0
+      }))
+  };
+}
+
 function getVaultLockupLabel(vault) {
   if (!vault) return "";
   const cliff = Number(vault.cliff || 0);
@@ -443,7 +585,256 @@ function VaultStatus({ vault }) {
   );
 }
 
-function TrackVaultDetails({ vault, now }) {
+function VestedByDescriptionChart({ overview }) {
+  const safeOverview = overview || buildFallbackProtocolOverview();
+  const segments = safeOverview.segments?.length ? safeOverview.segments : buildFallbackProtocolOverview().segments;
+  const total = Number(safeOverview.totalLocked || 0);
+  const [displayTotal, setDisplayTotal] = useState(0);
+  const radius = 74;
+  const circumference = 2 * Math.PI * radius;
+  let runningOffset = 0;
+
+  useEffect(() => {
+    let animationFrame = 0;
+    const duration = 1200;
+    const startedAt = performance.now();
+    const target = Number.isFinite(total) ? total : 0;
+
+    const tick = (timestamp) => {
+      const progress = Math.min(1, (timestamp - startedAt) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplayTotal(target * eased);
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(tick);
+      }
+    };
+
+    setDisplayTotal(0);
+    animationFrame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animationFrame);
+  }, [total]);
+
+  const summaryCards = [
+    { label: "Total Vaults", value: safeOverview.totalVaults.toLocaleString() },
+    { label: "Total Locked OPN", value: `${formatDisplayAmount(safeOverview.totalLocked, 2)} OPN` },
+    { label: "Total Claimed OPN", value: `${formatDisplayAmount(safeOverview.totalClaimed, 2)} OPN` },
+    { label: "Total Active Vestings", value: safeOverview.activeVestings.toLocaleString() }
+  ];
+
+  return (
+    <section className="vested-note-chart" aria-labelledby="vested-note-chart-title">
+      <div className="vested-note-chart-heading">
+        <h4 id="vested-note-chart-title">VestFlow Overview</h4>
+        <p>Distribution of all vault categories across the protocol</p>
+      </div>
+      <div className="vested-note-chart-grid">
+        <div className="vested-donut-wrap" aria-hidden="true">
+          <svg className="vested-donut" viewBox="0 0 220 220" role="img">
+            <defs>
+              <filter id="vestedDonutGlow" x="-40%" y="-40%" width="180%" height="180%">
+                <feGaussianBlur stdDeviation="4" result="coloredBlur" />
+                <feMerge>
+                  <feMergeNode in="coloredBlur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <circle className="vested-donut-track" cx="110" cy="110" r={radius} />
+            <g className="vested-donut-ring">
+              {segments.length ? segments.map((segment, index) => {
+                const sliceLength = Math.max((segment.percentage / 100) * circumference, 0);
+                const sliceOffset = runningOffset;
+                runningOffset += sliceLength;
+                return (
+                  <circle
+                    key={segment.label}
+                    className="vested-donut-slice"
+                    cx="110"
+                    cy="110"
+                    r={radius}
+                    style={{
+                      "--slice-color": segment.color,
+                      "--slice-length": sliceLength,
+                      "--slice-gap": circumference,
+                      "--slice-offset": -sliceOffset,
+                      "--slice-delay": `${index * 90}ms`
+                    }}
+                  />
+                );
+              }) : (
+                <circle className="vested-donut-empty" cx="110" cy="110" r={radius} />
+              )}
+            </g>
+          </svg>
+        </div>
+
+        <div className="vested-note-total">
+          <span>TOTAL LOCKED</span>
+          <strong>{formatDisplayAmount(displayTotal, 2)} OPN</strong>
+          <small>{safeOverview.source === "fallback" ? "Mock protocol statistics" : "Live protocol statistics"}</small>
+        </div>
+
+        <div className="vested-note-legend">
+          {segments.length ? segments.map((segment, index) => (
+            <div
+              className="vested-note-legend-item"
+              key={segment.label}
+              style={{ "--legend-color": segment.color, "--legend-delay": `${index * 120}ms` }}
+            >
+              <span className="vested-note-dot" aria-hidden="true" />
+              <span className="vested-note-label">{segment.label}</span>
+              <strong>{formatDisplayAmount(segment.amount, 2)} OPN</strong>
+              <small>{segment.percentage.toFixed(1)}%</small>
+            </div>
+          )) : (
+            <div className="vested-note-empty">Protocol statistics are loading.</div>
+          )}
+        </div>
+      </div>
+      <div className="vested-note-summary-grid">
+        {summaryCards.map((card) => (
+          <div className="vested-note-summary-card" key={card.label}>
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function VaultBreakdownDonut({ vault, isLoading }) {
+  const breakdown = useMemo(() => buildVaultBreakdown(vault), [vault]);
+  const { segments, total, totalRaw } = breakdown;
+  const [displayTotal, setDisplayTotal] = useState(0);
+  const radius = 74;
+  const circumference = 2 * Math.PI * radius;
+  let runningOffset = 0;
+
+  useEffect(() => {
+    if (isLoading || !vault || total <= 0) {
+      setDisplayTotal(0);
+      return undefined;
+    }
+
+    let animationFrame = 0;
+    const duration = 900;
+    const startedAt = performance.now();
+
+    const tick = (timestamp) => {
+      const progress = Math.min(1, (timestamp - startedAt) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplayTotal(total * eased);
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(tick);
+      }
+    };
+
+    setDisplayTotal(0);
+    animationFrame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animationFrame);
+  }, [isLoading, total, vault]);
+
+  const emptyMessage = isLoading
+    ? "Loading vault breakdown from contract data..."
+    : vault
+      ? "No vesting amount is available for this vault yet."
+      : "Select a vault or enter a Vault ID to see the vesting breakdown.";
+
+  return (
+    <section className={`vault-breakdown-chart ${segments.length ? "" : "is-empty"}`} aria-labelledby="vault-breakdown-title">
+      <div className="vault-breakdown-heading">
+        <h4 id="vault-breakdown-title">Vesting Breakdown</h4>
+        <p>Selected vault claim progress from live contract values</p>
+      </div>
+
+      <div className="vault-breakdown-grid">
+        <div className="vault-breakdown-donut-wrap" aria-hidden="true">
+          <svg className="vault-breakdown-donut" viewBox="0 0 220 220" role="img">
+            <defs>
+              <filter id="vaultBreakdownGlow" x="-40%" y="-40%" width="180%" height="180%">
+                <feGaussianBlur stdDeviation="4" result="coloredBlur" />
+                <feMerge>
+                  <feMergeNode in="coloredBlur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <circle className="vault-breakdown-track" cx="110" cy="110" r={radius} />
+            <circle className="vault-breakdown-pulse" cx="110" cy="110" r={radius + 12} />
+            <g className="vault-breakdown-ring">
+              {segments.length ? segments.map((segment, index) => {
+                const sliceLength = Math.max((segment.percentage / 100) * circumference, 0);
+                const sliceOffset = runningOffset;
+                runningOffset += sliceLength;
+                return (
+                  <circle
+                    key={segment.key}
+                    className="vault-breakdown-slice"
+                    cx="110"
+                    cy="110"
+                    r={radius}
+                    style={{
+                      "--slice-color": segment.color,
+                      "--slice-length": sliceLength,
+                      "--slice-gap": circumference,
+                      "--slice-offset": -sliceOffset,
+                      "--slice-delay": `${index * 100}ms`
+                    }}
+                  />
+                );
+              }) : (
+                <circle className="vault-breakdown-empty-ring" cx="110" cy="110" r={radius} />
+              )}
+            </g>
+          </svg>
+          <div className="vault-breakdown-center">
+            <span>Total Vesting</span>
+            <strong>{formatDisplayAmount(displayTotal, 2)}</strong>
+            <small>OPN</small>
+          </div>
+        </div>
+
+        <div className="vault-breakdown-legend">
+          {segments.length ? segments.map((segment, index) => (
+            <div
+              className="vault-breakdown-legend-item"
+              key={segment.key}
+              style={{ "--legend-color": segment.color, "--legend-delay": `${index * 110}ms` }}
+            >
+              <span className="vault-breakdown-dot" aria-hidden="true" />
+              <span className="vault-breakdown-label">{segment.label}</span>
+              <strong>{formatRawOpn(segment.raw, 2)} OPN</strong>
+              <small>{segment.percentage.toFixed(1)}%</small>
+            </div>
+          )) : (
+            <div className="vault-breakdown-empty">
+              {isLoading ? <span className="loading-dots" aria-hidden="true"><i /><i /><i /></span> : null}
+              <span>{emptyMessage}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="vault-breakdown-total">
+        <span>Total vesting amount</span>
+        <strong>{totalRaw > 0n ? `${formatRawOpn(totalRaw, 2)} OPN` : "0.00 OPN"}</strong>
+      </div>
+    </section>
+  );
+}
+
+function TrackVaultDetails({ vault, now, isLoading }) {
+  if (isLoading || !vault) {
+    return (
+      <div className="vault-summary">
+        <div className="empty-state compact-empty">{isLoading ? "Loading vault data..." : "Select a vault or enter a Vault ID."}</div>
+        <p className="vault-status-note">Vault data loads automatically from the selected Vault ID.</p>
+        <VaultBreakdownDonut vault={null} isLoading={isLoading} />
+      </div>
+    );
+  }
+
   const status = vault?.cancelled
     ? { label: "Cancelled", tone: "claimed", helper: "" }
     : getVaultStatusDetails(vault);
@@ -471,6 +862,7 @@ function TrackVaultDetails({ vault, now }) {
         <strong className="countdown-value">{finalCountdownValue}</strong>
       </div>
       <p className="vault-status-note">Vault data loads automatically from the selected Vault ID.</p>
+      <VaultBreakdownDonut vault={vault} isLoading={isLoading} />
     </div>
   );
 }
@@ -490,7 +882,6 @@ function App() {
   const [isBalanceLoading, setIsBalanceLoading] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [activity, setActivity] = useState(getInitialActivity);
-  const [activityExpanded, setActivityExpanded] = useState(false);
   const [pendingAction, setPendingAction] = useState("");
   const [assetTab, setAssetTab] = useState("native");
   const [useCustomRecipient, setUseCustomRecipient] = useState(false);
@@ -506,6 +897,7 @@ function App() {
   });
   const [vaultId, setVaultId] = useState("");
   const [vaultInfo, setVaultInfo] = useState(null);
+  const [protocolOverview, setProtocolOverview] = useState(() => buildFallbackProtocolOverview());
   const [countdownNow, setCountdownNow] = useState(Date.now());
   const [myVaults, setMyVaults] = useState([]);
   const [showClaimedVaults, setShowClaimedVaults] = useState(false);
@@ -732,7 +1124,7 @@ function App() {
 
     revealTargets.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
-  }, [activePage, activityExpanded, proofReceipt]);
+  }, [activePage, proofReceipt]);
 
   useEffect(() => {
     if (activePage !== "roadmap" || typeof window === "undefined") return;
@@ -1481,6 +1873,56 @@ function App() {
     return new Contract(VESTFLOW_ADDRESS, ABI, provider);
   }
 
+  const loadProtocolOverview = useCallback(async () => {
+    if (!contractReady) {
+      setProtocolOverview(buildFallbackProtocolOverview());
+      return;
+    }
+
+    try {
+      const contract = getReadContract();
+      const nextId = await contract.nextVaultId();
+      const totalVaults = Number(nextId);
+
+      if (!Number.isFinite(totalVaults) || totalVaults <= 0) {
+        setProtocolOverview(buildFallbackProtocolOverview());
+        return;
+      }
+
+      setNextVaultId(nextId.toString());
+      const batchSize = 16;
+      const vaults = [];
+
+      for (let start = 0; start < totalVaults; start += batchSize) {
+        const batchIds = Array.from(
+          { length: Math.min(batchSize, totalVaults - start) },
+          (_, index) => String(start + index)
+        );
+        const batchVaults = await Promise.all(
+          batchIds.map(async (id) => {
+            try {
+              const data = await contract.vaults(id);
+              return {
+                id,
+                amountRaw: data.amount.toString(),
+                claimedRaw: data.claimed.toString(),
+                cancelled: data.cancelled,
+                title: data.title
+              };
+            } catch {
+              return null;
+            }
+          })
+        );
+        vaults.push(...batchVaults.filter(Boolean));
+      }
+
+      setProtocolOverview(buildProtocolOverviewFromVaults(vaults, "live"));
+    } catch {
+      setProtocolOverview(buildFallbackProtocolOverview());
+    }
+  }, [contractReady]);
+
   function mapVaultInfo(data, claimable, vested) {
     return {
       creator: data.creator,
@@ -2187,7 +2629,7 @@ function App() {
         <div key={activePage} className="page-transition">
         {activePage === "home" && (
           <>
-        <section className="hero home-hero page-panel reveal reveal-up" data-reveal>
+        <section className="hero home-hero page-panel vf-section-shell reveal reveal-up" data-reveal>
           <video className="home-hero-video" autoPlay muted loop playsInline preload="metadata" aria-hidden="true">
             <source src="/home_bg.mp4" type="video/mp4" />
           </video>
@@ -2258,7 +2700,7 @@ function App() {
         {activePage === "lock" && (
           <>
         {!proofReceipt ? (
-        <section className="lock-page page-panel">
+        <section className="lock-page page-panel vf-section-shell">
             <div className="card lock-card tech-card reveal reveal-up" data-reveal>
               <div className="card-heading">
                 <p className="section-kicker">Main Product Dashboard</p>
@@ -2450,7 +2892,7 @@ function App() {
             <p>Your VestFlow lock is now live on OPN Testnet.</p>
           </div>
 
-          <div className="share-proof-section">
+          <div className="share-proof-section vf-section-shell">
             <div className="share-proof-3d-wrap proof-card-activated">
               <div className="share-proof-card">
                 <div className="share-proof-glow" aria-hidden="true" />
@@ -2511,7 +2953,7 @@ function App() {
 
         {activePage === "track" && (
           <>
-        <section className="claim-center page-panel reveal reveal-up" data-reveal>
+        <section className="claim-center page-panel vf-section-shell reveal reveal-up" data-reveal>
           <div className="claim-center-heading">
             <h2><span>Track</span> <span className="gradient-title">& Claim</span></h2>
             <p>Select a vault, review status, and claim vested OPN.</p>
@@ -2534,17 +2976,8 @@ function App() {
                   <button type="button" onClick={() => loadMyVaults(true)} disabled={!account || isVaultListLoading}>
                     {isVaultListLoading ? "Refreshing..." : "Refresh My Vaults"}
                   </button>
-                  <button
-                    type="button"
-                    className={`toggle-claimed-vaults ${showClaimedVaults ? "active" : ""}`}
-                    onClick={() => setShowClaimedVaults((enabled) => !enabled)}
-                    disabled={!account}
-                    aria-pressed={showClaimedVaults}
-                  >
-                    {showClaimedVaults ? "Hide claimed vaults" : "Show claimed vaults"}
-                  </button>
                 </div>
-                <div className="my-vaults-list">
+                <div className={`my-vaults-list ${showClaimedVaults ? "show-claimed" : "hide-claimed"}`}>
                   {!account ? (
                     <div className="empty-state compact-empty">Connect wallet to load your vaults.</div>
                   ) : isVaultListLoading ? (
@@ -2556,28 +2989,31 @@ function App() {
                     </div>
                   ) : vaultLoadError ? (
                     <div className="empty-state compact-empty">{vaultLoadError}</div>
-                  ) : visibleMyVaults.length ? (
-                    visibleMyVaults.map((vault) => {
-                      const status = getVaultStatusDetails(vault);
-                      return (
-                        <button
-                          key={vault.id}
-                          type="button"
-                          className={vaultId.trim() === vault.id ? "my-vault-item active" : "my-vault-item"}
-                          onClick={() => selectVault(vault)}
-                        >
-                          <span>
-                            <strong>Vault #{vault.id}</strong>
-                            <small>{vault.title || "Untitled"}</small>
-                          </span>
-                          <span>
-                            <strong>{vault.amount} OPN</strong>
-                            <small>Claimable: {vault.claimable || "0.0"} OPN</small>
-                          </span>
-                          <span className={`status-badge ${status.tone}`}>{status.label}</span>
-                        </button>
-                      );
-                    })
+                ) : visibleMyVaults.length ? (
+                  visibleMyVaults.map((vault) => {
+                    const status = getVaultStatusDetails(vault);
+                    const vaultTypeLabel = vault.title?.trim() || "Contributor Vesting";
+                    const isClaimed = isVaultFullyClaimed(vault);
+                    const vaultCardClassName = [
+                      "track-vault-list-item",
+                      vaultId.trim() === vault.id ? "active" : "",
+                      isClaimed ? "claimed" : ""
+                    ].filter(Boolean).join(" ");
+                    return (
+                      <button
+                        key={vault.id}
+                        type="button"
+                        className={vaultCardClassName}
+                        onClick={() => selectVault(vault)}
+                      >
+                        <span className="track-vault-list-item__content">
+                          <span className="track-vault-list-item__title">Vault #{vault.id}</span>
+                          <span className="track-vault-list-item__meta">{vaultTypeLabel}</span>
+                        </span>
+                        <span className={`track-status-badge status-badge ${status.tone}`}>{status.label}</span>
+                      </button>
+                    );
+                  })
                   ) : (
                     <div className="empty-state compact-empty">No vaults found for this wallet. Create a lock first or enter a Vault ID manually.</div>
                   )}
@@ -2587,6 +3023,18 @@ function App() {
                   <input value={vaultId} onChange={(e) => setVaultId(e.target.value)} placeholder="Enter Vault ID" />
                   <small className="field-hint">Manual entries auto-load after a short delay.</small>
                 </div>
+                <div className="vault-list-footer">
+                  <button
+                    type="button"
+                    className={`toggle-claimed-vaults ${showClaimedVaults ? "active" : ""}`}
+                    onClick={() => setShowClaimedVaults((enabled) => !enabled)}
+                    disabled={!account}
+                    aria-pressed={showClaimedVaults}
+                  >
+                    <ChevronDown className="toggle-claimed-vaults-icon" aria-hidden="true" size={16} />
+                    <span>{showClaimedVaults ? "Hide claimed vaults" : "Show claimed vaults"}</span>
+                  </button>
+                </div>
               </div>
 
               <div className="vault-details-panel claim-tech-card reveal reveal-right" data-reveal>
@@ -2594,13 +3042,7 @@ function App() {
                   <h3>Vault Status</h3>
                   <p>Claimable amount and status for the selected vault.</p>
                 </div>
-                {isVaultLoading ? (
-                  <div className="empty-state">Loading vault data...</div>
-                ) : vaultInfo ? (
-                  <TrackVaultDetails vault={vaultInfo} now={countdownNow} />
-                ) : (
-                  <div className="empty-state">Select a vault or enter a Vault ID.</div>
-                )}
+                <TrackVaultDetails vault={vaultInfo} now={countdownNow} isLoading={isVaultLoading} />
               </div>
             </div>
             <div className="claim-center-actions">
@@ -2635,49 +3077,12 @@ function App() {
               </div>
           </div>
 
-          <div className="card activity-feed activity-card compact-panel compact-activity protocol-events-bottom reveal reveal-up" data-reveal>
-            <div className="activity-toggle-heading">
-              <div>
-                <h2>Protocol Events</h2>
-                <p>Recent wallet and vault activity</p>
-              </div>
-              <span>{activity.length} latest</span>
-              <button type="button" onClick={() => setActivityExpanded((expanded) => !expanded)}>
-                {activityExpanded ? "Hide" : "Show"}
-              </button>
-            </div>
-            {activityExpanded && (
-              activity.length ? (
-                <div className="activity-list">
-                  {activity.map((item) => (
-                    <div key={item.id} className={item.txHash ? "activity-item has-link" : "activity-item"}>
-                      <span className="activity-marker">
-                        <ShieldCheck aria-hidden="true" size={15} />
-                      </span>
-                      <div>
-                        <strong>{item.title}</strong>
-                        <p>{item.description}</p>
-                        <time>{new Date(item.timestamp).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time>
-                      </div>
-                      {item.txHash && (
-                        <a href={`https://testnet.iopn.tech/tx/${item.txHash}`} target="_blank" rel="noreferrer">
-                          <ExternalLink aria-hidden="true" size={15} />
-                        </a>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="empty-state compact-empty">No recent activity yet.</div>
-              )
-            )}
-          </div>
         </section>
           </>
         )}
 
         {activePage === "proof" && (
-        <section className="proof page-panel reveal reveal-up" data-reveal>
+        <section className="proof page-panel vf-section-shell reveal reveal-up" data-reveal>
           <div className="proof-intro">
             <p className="section-kicker">On-chain proof</p>
             <h2><span>Live public deployment</span> <span className="gradient-title">on OPN Testnet</span></h2>
@@ -2717,7 +3122,7 @@ function App() {
 
         {activePage === "about" && (
           <>
-        <section className="info-grid page-panel reveal reveal-up" data-reveal>
+        <section className="info-grid page-panel vf-section-shell reveal reveal-up" data-reveal>
           <div className="info-card reveal reveal-scale" style={{ "--delay": "0ms" }}>
             <span>Problem</span>
             <h3>Manual payouts are slow and hard to verify.</h3>
@@ -2735,7 +3140,7 @@ function App() {
           </div>
         </section>
 
-        <section className="official-links page-panel reveal reveal-up" data-reveal>
+        <section className="official-links page-panel vf-section-shell reveal reveal-up" data-reveal>
           <div className="official-links-heading">
             <p className="section-kicker">Official Links</p>
             <h2><span>Explore IOPn</span> <span className="gradient-title">ecosystem resources</span></h2>
@@ -2764,7 +3169,7 @@ function App() {
           </div>
         </section>
 
-        <section className="use-cases reveal reveal-up" data-reveal>
+        <section className="use-cases vf-section-shell reveal reveal-up" data-reveal>
           <p className="section-kicker">Use cases</p>
           <h2><span>Built for</span> <span className="gradient-title">OPN ecosystem coordination</span></h2>
           <div className="feature-grid">
@@ -2778,7 +3183,7 @@ function App() {
         )}
 
         {activePage === "guide" && (
-          <section className="guide-journey page-panel reveal reveal-up" data-reveal>
+          <section className="guide-journey page-panel vf-section-shell reveal reveal-up" data-reveal>
             <div className="guide-hero">
               <span className="section-kicker">VESTFLOW GUIDE</span>
               <h2 className="guide-title"><span>How VestFlow</span> <span className="gradient-title">Works</span></h2>
@@ -2844,7 +3249,7 @@ function App() {
 
         {activePage === "roadmap" && (
           <>
-        <section className="roadmap page-panel reveal reveal-up" data-reveal>
+        <section className="roadmap page-panel vf-section-shell reveal reveal-up" data-reveal>
           <p className="section-kicker">Roadmap</p>
           <h2>Roadmap</h2>
           <h3 className="roadmap-subtitle gradient-title">Q1-Q4 2026</h3>
